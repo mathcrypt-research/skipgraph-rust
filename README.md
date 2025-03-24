@@ -4,9 +4,10 @@ An open-source implementation of Skip Graphs middleware written in Rust.
 
 ## Overview
 
-[Skip Graph]() is a distributed data structure designed to achieve efficient search, insert, and delete operations over a dynamic peer-to-peer 
+[Skip Graph](https://arxiv.org/pdf/cs.DS/0306043) is a distributed data structure designed to achieve efficient search, insert, and delete operations over a dynamic peer-to-peer 
 network. 
-This project provides a Rust-based implementation of Skip Graph middleware, suitable for building distributed systems requiring such a data structure.
+This project provides a Rust-based implementation of Skip Graph middleware, suitable for building distributed systems requiring a P2P routing 
+overlay or distributed key-value store.
 
 ## Prerequisites
 
