@@ -6,14 +6,14 @@ use anyhow::anyhow;
 
 /// It is a 2D array of Identity, where the first dimension is the level and the second dimension is the direction.
 /// Caution: lookup table by itself is not thread-safe, should be used with an Arc<Mutex<LookupTable>>.
-struct ArrayLookupTable {
-    left: [Option<Identity>; model::IDENTIFIER_SIZE_BYTES],
-    right: [Option<Identity>; model::IDENTIFIER_SIZE_BYTES],
+struct ArrayLookupTable<T> where T : Copy {
+    left: [Option<Identity<T>>; model::IDENTIFIER_SIZE_BYTES],
+    right: [Option<Identity<T>>; model::IDENTIFIER_SIZE_BYTES],
 }
 
-impl ArrayLookupTable {
+impl<T> ArrayLookupTable<T> where T : Copy {
     /// Create a new empty LookupTable instance.
-    pub fn new() -> ArrayLookupTable {
+    pub fn new() -> ArrayLookupTable<T> {
         ArrayLookupTable {
             left: [None; model::IDENTIFIER_SIZE_BYTES],
             right: [None; model::IDENTIFIER_SIZE_BYTES],
@@ -21,11 +21,11 @@ impl ArrayLookupTable {
     }
 }
 
-impl LookupTable for ArrayLookupTable {
+impl<T> LookupTable<T> for ArrayLookupTable<T> where T : Copy {
     /// Update the entry at the given level and direction.
     fn update_entry(
         &mut self,
-        identity: Identity,
+        identity: Identity<T>,
         level: Level,
         direction: Direction,
     ) -> anyhow::Result<()> {
@@ -77,7 +77,7 @@ impl LookupTable for ArrayLookupTable {
         &self,
         level: Level,
         direction: Direction,
-    ) -> anyhow::Result<Option<&Identity>> {
+    ) -> anyhow::Result<Option<&Identity<T>>> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
@@ -94,13 +94,14 @@ impl LookupTable for ArrayLookupTable {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::Address;
     use super::*;
     use crate::core::testutil::fixtures::*;
 
     #[test]
     /// A new lookup table should be empty.
     fn test_lookup_table_empty() {
-        let lt = ArrayLookupTable::new();
+        let lt : ArrayLookupTable<Address> = ArrayLookupTable::new();
         for i in 0..model::IDENTIFIER_SIZE_BYTES {
             assert_eq!(None, lt.get_entry(i, Direction::Left).unwrap());
             assert_eq!(None, lt.get_entry(i, Direction::Right).unwrap());
@@ -113,8 +114,8 @@ mod tests {
     /// The test will also try to get an entry at level 2, which should return an error.
     fn test_lookup_table_update_get() {
         let mut lt = ArrayLookupTable::new();
-        let id1 = random_identity();
-        let id2 = random_identity();
+        let id1 = random_network_identity();
+        let id2 = random_network_identity();
 
         lt.update_entry(id1, 0, Direction::Left).unwrap();
         lt.update_entry(id2, 1, Direction::Right).unwrap();
@@ -130,8 +131,8 @@ mod tests {
     /// The test will then try to get the removed entries, which should return None.
     fn test_lookup_table_remove() {
         let mut lt = ArrayLookupTable::new();
-        let id1 = random_identity();
-        let id2 = random_identity();
+        let id1 = random_network_identity();
+        let id2 = random_network_identity();
 
         lt.update_entry(id1, 0, Direction::Left).unwrap();
         lt.update_entry(id2, 1, Direction::Right).unwrap();
@@ -147,7 +148,7 @@ mod tests {
     /// Test updating entries at out-of-bound levels.
     fn test_lookup_table_out_of_bound() {
         let mut lt = ArrayLookupTable::new();
-        let id = random_identity();
+        let id = random_network_identity();
 
         let result = lt.update_entry(id, model::IDENTIFIER_SIZE_BYTES, Direction::Left);
         assert!(result.is_err());
@@ -174,8 +175,8 @@ mod tests {
     /// The test will then get the entry at level 0, which should return the second identity.
     fn test_lookup_table_override() {
         let mut lt = ArrayLookupTable::new();
-        let id1 = random_identity();
-        let id2 = random_identity();
+        let id1 = random_network_identity();
+        let id2 = random_network_identity();
 
         lt.update_entry(id1, 0, Direction::Left).unwrap();
         assert_eq!(Some(&id1), lt.get_entry(0, Direction::Left).unwrap());

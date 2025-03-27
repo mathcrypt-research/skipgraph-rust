@@ -32,18 +32,18 @@ pub fn random_address() -> Address {
     Address::new("localhost", &random_port().to_string())
 }
 
-/// Generate a random identity
-pub fn random_identity() -> Identity {
+/// Generate a random network identity; ID, MembershipVector, Address.
+pub fn random_network_identity() -> Identity<Address> {
     Identity::new(
         &random_identifier(),
         &random_membership_vector(),
-        &random_address(),
+        random_address(),
     )
 }
 
-/// Generate n random identities
-pub fn random_identities(n: usize) -> Vec<Identity> {
-    (0..n).map(|_| random_identity()).collect()
+/// Generate n random network identities; ID, MembershipVector, Address.
+pub fn random_network_identities(n: usize) -> Vec<Identity<Address>> {
+    (0..n).map(|_| random_network_identity()).collect()
 }
 
 #[cfg(test)]
@@ -56,7 +56,7 @@ mod test {
         let ids = super::random_sorted_identifiers(100);
 
         // ensures that the identifiers are sorted in ascending order
-        ids.iter().skip(1).fold(&ids[0], |prev, curr|  {
+        ids.iter().skip(1).fold(&ids[0], |prev, curr| {
             assert_eq!(CompareLess, prev.compare(curr).result());
             curr
         });

@@ -5,11 +5,11 @@ use crate::core::model::identity::Identity;
 pub type Level = usize;
 
 /// LookupTable is the core view of Skip Graph node towards the network.
-pub trait LookupTable {
+pub trait LookupTable<T> {
     /// Update the entry at the given level and direction.
     fn update_entry(
         &mut self,
-        identity: Identity,
+        identity: Identity<T>,
         level: Level,
         direction: Direction,
     ) -> anyhow::Result<()>;
@@ -20,5 +20,5 @@ pub trait LookupTable {
     /// Get the entry at the given level and direction.
     /// Returns None if the entry is not present.
     /// Returns Some(Identity) if the entry is present.
-    fn get_entry(&self, level: Level, direction: Direction) -> anyhow::Result<Option<&Identity>>;
+    fn get_entry(&self, level: Level, direction: Direction) -> anyhow::Result<Option<&Identity<T>>>;
 }
