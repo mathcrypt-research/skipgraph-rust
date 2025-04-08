@@ -1,7 +1,8 @@
 use crate::core::model::identity::Identity;
 use crate::core::testutil::random::random_hex_str;
-use crate::core::{model, Address, Identifier, MembershipVector};
+use crate::core::{model, Address, ArrayLookupTable, Identifier, LookupTable, MembershipVector};
 use rand::Rng;
+use crate::core::model::direction::Direction;
 
 /// Generate a random identifier
 pub fn random_identifier() -> Identifier {
@@ -44,6 +45,17 @@ pub fn random_network_identity() -> Identity<Address> {
 /// Generate n random network identities; ID, MembershipVector, Address.
 pub fn random_network_identities(n: usize) -> Vec<Identity<Address>> {
     (0..n).map(|_| random_network_identity()).collect()
+}
+
+/// Generates a random lookup table with 2 * n entries (n left and n right), and n levels.
+pub fn random_network_lookup_table(n: usize) -> ArrayLookupTable<Address> {
+    let mut lt = ArrayLookupTable::new();
+    let ids = random_network_identities(2 * n);
+    for i in 0..n {
+        lt.update_entry(ids[i], i, Direction::Left).unwrap();
+        lt.update_entry(ids[i + n], i, Direction::Right).unwrap();
+    }
+    lt
 }
 
 #[cfg(test)]

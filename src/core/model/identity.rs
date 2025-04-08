@@ -8,7 +8,10 @@ pub struct Identity<T> {
     address: T,
 }
 
-impl<T> Identity<T> where T : Copy {
+impl<T> Identity<T>
+where
+    T: Copy,
+{
     /// Create a new Identity
     pub fn new(id: &Identifier, mem_vec: &MembershipVector, address: T) -> Identity<T> {
         Identity {
