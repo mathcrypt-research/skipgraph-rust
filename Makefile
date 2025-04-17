@@ -7,7 +7,7 @@ install-lint:
 .PHONEY lint:
 lint:
 	@echo "Running clippy"
-	@cargo clippy
+	@cargo clippy -- -D warnings
 
 .PHONEY install-tools:
 install-tools: install-lint

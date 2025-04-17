@@ -4,18 +4,17 @@ use crate::core::{
 };
 use std::fmt;
 use std::fmt::Formatter;
-use std::sync::Arc;
+use std::rc::Rc;
 
 /// LocalNode is a struct that represents a single node in the local implementation of the skip graph.
-
 struct LocalNode {
     id: Identifier,
     mem_vec: MembershipVector,
-    lt: Box<dyn LookupTable<Arc<LocalNode>>>,
+    lt: Box<dyn LookupTable<Rc<LocalNode>>>,
 }
 
 impl Node for LocalNode {
-    type Address = Arc<LocalNode>;
+    type Address = Rc<LocalNode>;
 
     fn get_identifier(&self) -> &Identifier {
         &self.id
@@ -26,24 +25,24 @@ impl Node for LocalNode {
     }
 
     fn get_address(&self) -> Self::Address {
-        Arc::new(self.clone())
+        Rc::new(self.clone())
     }
 
     fn search_by_id(
         &self,
-        req: &IdentifierSearchRequest,
+        _req: &IdentifierSearchRequest,
     ) -> anyhow::Result<IdentifierSearchResult<Self::Address>> {
         todo!()
     }
 
     fn search_by_mem_vec(
         &self,
-        req: &IdentifierSearchRequest,
+        _req: &IdentifierSearchRequest,
     ) -> anyhow::Result<IdentifierSearchResult<Self::Address>> {
         todo!()
     }
 
-    fn join(&self, introducer: Self::Address) -> anyhow::Result<()> {
+    fn join(&self, _introducer: Self::Address) -> anyhow::Result<()> {
         todo!()
     }
 }
@@ -70,8 +69,8 @@ impl fmt::Debug for LocalNode {
 impl Clone for LocalNode {
     fn clone(&self) -> Self {
         LocalNode {
-            id: self.id.clone(),
-            mem_vec: self.mem_vec.clone(),
+            id: self.id,
+            mem_vec: self.mem_vec,
             lt: self.lt.clone(),
         }
     }

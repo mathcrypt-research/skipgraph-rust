@@ -26,15 +26,23 @@ where
     }
 }
 
+impl <T> Default for ArrayLookupTable<T>
+where
+    T: Clone,
+{
+    fn default() -> Self {
+        ArrayLookupTable::new()
+    }
+}
+
 impl<T> Debug for ArrayLookupTable<T>
 where
     T: Clone + Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut i = 0;
-        for (l, r) in self.left.iter().zip(self.right.iter()) {
-            write!(f, "Level: {}, Left: {:?}, Right: {:?}\n", i, l, r)?;
-            i += 1;
+
+        for (i, (l, r)) in self.left.iter().zip(self.right.iter()).enumerate() {
+            writeln!(f, "Level: {}, Left: {:?}, Right: {:?}", i, l, r)?;
         }
         Ok(())
     }

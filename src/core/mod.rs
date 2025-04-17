@@ -1,5 +1,5 @@
 mod lookup;
-mod model;
+pub mod model;
 pub mod testutil;
 mod search;
 mod node;

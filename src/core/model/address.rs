@@ -18,12 +18,12 @@ impl Address {
 
     /// Get the host
     pub fn host(&self) -> &str {
-        &self.host.as_str()
+        self.host.as_str()
     }
 
     /// Get the port
     pub fn port(&self) -> &str {
-        &self.port.as_str()
+        self.port.as_str()
     }
 }
 

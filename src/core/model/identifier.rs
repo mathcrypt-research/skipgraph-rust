@@ -1,7 +1,7 @@
 use crate::core::model;
 use crate::core::model::identifier::ComparisonResult::{CompareEqual, CompareGreater, CompareLess};
 use crate::core::model::IDENTIFIER_SIZE_BYTES;
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
@@ -16,7 +16,6 @@ pub enum ComparisonResult {
     CompareEqual,
     CompareLess,
 }
-
 
 /// ComparisonContext represents the context of a comparison between two identifiers.
 /// It contains the result of the comparison, the left and right identifiers, and the index of the differing byte.
@@ -80,26 +79,30 @@ pub struct Identifier([u8; model::IDENTIFIER_SIZE_BYTES]);
 impl Identifier {
     pub fn compare(&self, other: &Identifier) -> ComparisonContext {
         for i in 0..model::IDENTIFIER_SIZE_BYTES {
-            if self.0[i] < other.0[i] {
-                return ComparisonContext {
-                    result: CompareLess,
-                    left: self.clone(),
-                    right: other.clone(),
-                    diff_index: i,
-                };
-            } else if self.0[i] > other.0[i] {
-                return ComparisonContext {
-                    result: CompareGreater,
-                    left: self.clone(),
-                    right: other.clone(),
-                    diff_index: i,
-                };
+            match self.0[i].cmp(&other.0[i]) {
+                std::cmp::Ordering::Less => {
+                    return ComparisonContext {
+                        result: CompareLess,
+                        left: *self,
+                        right: *other,
+                        diff_index: i,
+                    };
+                }
+                std::cmp::Ordering::Greater => {
+                    return ComparisonContext {
+                        result: CompareGreater,
+                        left: *self,
+                        right: *other,
+                        diff_index: i,
+                    };
+                }
+                _ => {}
             }
         }
         ComparisonContext {
             result: CompareEqual,
-            left: self.clone(),
-            right: other.clone(),
+            left: *self,
+            right: *other,
             diff_index: IDENTIFIER_SIZE_BYTES,
         }
     }
@@ -137,7 +140,7 @@ impl Identifier {
 impl Display for Identifier {
     /// Converts the Identifier into a base hex string.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 

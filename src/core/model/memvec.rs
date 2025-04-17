@@ -27,7 +27,7 @@ impl MembershipVector {
         } else {
             let mut mv = [0u8; model::IDENTIFIER_SIZE_BYTES];
             let offset = model::IDENTIFIER_SIZE_BYTES - bytes.len();
-            mv[offset..].copy_from_slice(&bytes);
+            mv[offset..].copy_from_slice(bytes);
             Ok(MembershipVector(mv))
         }
     }
@@ -134,7 +134,7 @@ impl MembershipVector {
 
 impl Display for MembershipVector {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{}", hex::encode(self.0))
     }
 }
 

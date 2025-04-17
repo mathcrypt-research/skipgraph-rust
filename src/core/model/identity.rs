@@ -1,4 +1,4 @@
-use crate::core::{Address, Identifier, MembershipVector};
+use crate::core::{Identifier, MembershipVector};
 
 /// Identity is an immutable struct that represents a node's identity in the network (ID, MembershipVector, Address).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,8 +15,8 @@ where
     /// Create a new Identity
     pub fn new(id: &Identifier, mem_vec: &MembershipVector, address: T) -> Identity<T> {
         Identity {
-            id: id.clone(),
-            mem_vec: mem_vec.clone(),
+            id: *id,
+            mem_vec: *mem_vec,
             address,
         }
     }
@@ -39,6 +39,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::core::Address;
     use super::*;
     use crate::core::testutil::fixtures::{random_identifier, random_membership_vector};
 
