@@ -1,5 +1,6 @@
 mod lookup;
 pub mod model;
+#[cfg(test)]
 pub mod testutil;
 mod search;
 mod node;

@@ -1,4 +1,4 @@
-#[cfg(test)]
+
 mod test_imports {
     pub use crate::core::model::direction::Direction;
     pub use crate::core::model::identity::Identity;
@@ -7,18 +7,15 @@ mod test_imports {
     pub use rand::Rng;
 }
 
-#[cfg(test)]
 use test_imports::*;
 
 
 /// Generate a random identifier.
-#[cfg(test)]
 pub fn random_identifier() -> Identifier {
     Identifier::from_string(&random_hex_str(model::IDENTIFIER_SIZE_BYTES)).unwrap()
 }
 
 /// Generate n random identifiers sorted in ascending order.
-#[cfg(test)]
 pub fn random_sorted_identifiers(n: usize) -> Vec<Identifier> {
     let mut ids = (0..n)
         .map(|_| random_identifier())
@@ -28,25 +25,21 @@ pub fn random_sorted_identifiers(n: usize) -> Vec<Identifier> {
 }
 
 /// Generate a random membership vector.
-#[cfg(test)]
 pub fn random_membership_vector() -> MembershipVector {
     MembershipVector::from_string(&random_hex_str(model::IDENTIFIER_SIZE_BYTES)).unwrap()
 }
 
 /// Generate a random port.
-#[cfg(test)]
 pub fn random_port() -> u16 {
     rand::rng().random_range(1024..=65535)
 }
 
 /// Generate a random address
-#[cfg(test)]
 pub fn random_address() -> Address {
     Address::new("localhost", &random_port().to_string())
 }
 
 /// Generate a random network identity; ID, MembershipVector, Address.
-#[cfg(test)]
 pub fn random_network_identity() -> Identity<Address> {
     Identity::new(
         &random_identifier(),
@@ -56,13 +49,11 @@ pub fn random_network_identity() -> Identity<Address> {
 }
 
 /// Generate n random network identities; ID, MembershipVector, Address.
-#[cfg(test)]
 pub fn random_network_identities(n: usize) -> Vec<Identity<Address>> {
     (0..n).map(|_| random_network_identity()).collect()
 }
 
 /// Generates a random lookup table with 2 * n entries (n left and n right), and n levels.
-#[cfg(test)]
 pub fn random_network_lookup_table(n: usize) -> ArrayLookupTable<Address> {
     let mut lt = ArrayLookupTable::new();
     let ids = random_network_identities(2 * n);
@@ -73,7 +64,7 @@ pub fn random_network_lookup_table(n: usize) -> ArrayLookupTable<Address> {
     lt
 }
 
-#[cfg(test)]
+
 mod test {
     use crate::core::model::identifier::ComparisonResult::CompareLess;
 
