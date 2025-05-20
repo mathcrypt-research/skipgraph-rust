@@ -9,20 +9,20 @@ pub type Level = usize;
 pub trait LookupTable<T> {
     /// Update the entry at the given level and direction.
     fn update_entry(
-        &mut self,
+        &self,
         identity: Identity<T>,
         level: Level,
         direction: Direction,
     ) -> anyhow::Result<()>;
 
     /// Remove the entry at the given level and direction.
-    fn remove_entry(&mut self, level: Level, direction: Direction) -> anyhow::Result<()>;
+    fn remove_entry(&self, level: Level, direction: Direction) -> anyhow::Result<()>;
 
     /// Get the entry at the given level and direction.
     /// Returns None if the entry is not present.
     /// Returns Some(Identity) if the entry is present.
     fn get_entry(&self, level: Level, direction: Direction)
-        -> anyhow::Result<Option<&Identity<T>>>;
+        -> anyhow::Result<Option<Identity<T>>>;
 
     /// Dynamically compares the lookup table with another for equality.
     fn equal(&self, other: &dyn LookupTable<T>) -> bool;
