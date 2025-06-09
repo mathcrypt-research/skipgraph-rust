@@ -1,4 +1,3 @@
-
 mod test_imports {
     pub use crate::core::model::direction::Direction;
     pub use crate::core::model::identity::Identity;
@@ -57,7 +56,7 @@ pub fn random_network_identities(n: usize) -> Vec<Identity<Address>> {
 
 /// Generates a random lookup table with 2 * n entries (n left and n right), and n levels.
 pub fn random_network_lookup_table(n: usize) -> ArrayLookupTable<Address> {
-    let lt = ArrayLookupTable::new();
+    let lt = ArrayLookupTable::new(&span_fixture());
     let ids = random_network_identities(2 * n);
     for i in 0..n {
         lt.update_entry(ids[i], i, Direction::Left).unwrap();
@@ -140,6 +139,29 @@ where T : Send + 'static {
     } else {
         Err("Thread timed out".to_string())
     }
+}
+
+/// Create a tracing span fixture for testing purposes.
+/// Note that this function initializes a global tracing subscriber for logging output, 
+/// at the DEBUG level (to avoid verbose output during tests and prolonged runtime, and hence
+/// failures due to timeouts). 
+/// But the span itself is created at TRACE level.
+pub fn span_fixture() -> tracing::Span {
+    // Initialize the global tracing subscriber for logging output.
+    // Using `try_init()` ensures that initialization happens only once globally,
+    // avoiding panics on repeated calls (e.g., in multiple tests or repeated fixture usage).
+    // Setting the max level to DEBUG enables debug-level logs to be captured and displayed.
+    // This setup is necessary for `tracing::debug!` macros to produce visible output during tests or runtime.
+    let _ = tracing_subscriber::fmt()
+        // Change the subscriber to use a custom format if needed
+        .with_max_level(tracing::Level::DEBUG)
+        .try_init();
+
+    // Create a new tracing span with the name "test_span" at TRACE level.
+    // Subscriber level controls the minimum log level to display (e.g., DEBUG shows debug and above).
+    // Log macros inside spans determine the actual log level of each event.
+    // This span level is just a label for grouping and doesn’t influence what gets logged.
+    tracing::span!(tracing::Level::TRACE, "test_span")
 }
 
 mod test {

@@ -1,15 +1,17 @@
-use crate::core::lookup::lookup_table::{Level, LookupTable};
+use crate::core::lookup::lookup_table::{LookupTableLevel, LookupTable};
 use crate::core::model;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use anyhow::anyhow;
 use std::fmt::{Debug, Formatter};
 use std::sync::RwLock;
+use tracing::{Level, Span};
 
 /// It is a 2D array of Identity, where the first dimension is the level and the second dimension is the direction.
 /// Caution: lookup table by itself is not thread-safe, should be used with an Arc<Mutex<LookupTable>>.
 pub struct ArrayLookupTable<T: Clone> {
     inner: RwLock<InnerArrayLookupTable<T>>,
+    span: Span
 }
 
 struct InnerArrayLookupTable<T> {
@@ -22,22 +24,16 @@ where
     T: Clone,
 {
     /// Create a new empty LookupTable instance.
-    pub fn new() -> ArrayLookupTable<T> {
+    pub fn new(parent_span: &Span) -> ArrayLookupTable<T> {
+        let span = tracing::span!(parent: parent_span, Level::INFO, "array_lookup_table");
+
         ArrayLookupTable {
             inner: RwLock::new(InnerArrayLookupTable {
                 left: vec![None; model::IDENTIFIER_SIZE_BYTES],
                 right: vec![None; model::IDENTIFIER_SIZE_BYTES],
             }),
+            span,
         }
-    }
-}
-
-impl<T> Default for ArrayLookupTable<T>
-where
-    T: Clone,
-{
-    fn default() -> Self {
-        ArrayLookupTable::new()
     }
 }
 
@@ -50,6 +46,7 @@ impl<T: Clone> Clone for ArrayLookupTable<T> {
                 left: inner.left.clone(),
                 right: inner.right.clone(),
             }),
+            span: self.span.clone(),
         }
     }
 }
@@ -79,7 +76,7 @@ where
     fn update_entry(
         &self,
         identity: Identity<T>,
-        level: Level,
+        level: LookupTableLevel,
         direction: Direction,
     ) -> anyhow::Result<()> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
@@ -96,18 +93,26 @@ where
 
         match direction {
             Direction::Left => {
-                inner.left[level] = Some(identity);
+                inner.left[level] = Some(identity.clone());
             }
             Direction::Right => {
-                inner.right[level] = Some(identity);
+                inner.right[level] = Some(identity.clone());
             }
         }
-
+        
+        // Log the update operation
+        let _enter = self.span.enter();
+        tracing::trace!(
+            "Updated entry at level {} in direction {:?} with identity {:?}",
+            level,
+            direction,
+            identity
+        );
         Ok(())
     }
     
     /// Remove the entry at the given level and direction, and flips it to None.
-    fn remove_entry(&self, level: Level, direction: Direction) -> anyhow::Result<()> {
+    fn remove_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<()> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
@@ -120,6 +125,12 @@ where
             Err(_) => return Err(anyhow!("Failed to acquire write lock on the lookup table")),
         };
 
+        // Record the current entry before removing it for logging
+        let current_entry = match direction {
+            Direction::Left => inner.left[level].clone(),
+            Direction::Right => inner.right[level].clone(),
+        };
+        
         match direction {
             Direction::Left => {
                 inner.left[level] = None;
@@ -129,6 +140,14 @@ where
             }
         }
 
+        // Log the remove operation
+        let _enter = self.span.enter();
+        tracing::trace!(
+            "Removed entry at level {} in direction {:?}: {:?}",
+            level,
+            direction,
+            current_entry
+        );
         Ok(())
     }
 
@@ -136,7 +155,7 @@ where
     /// Returns None if the entry does not exist.
     /// Returns Some(Identity) if the entry exists.
     /// Returns an error if the level is out of bounds.
-    fn get_entry(&self, level: Level, direction: Direction) -> anyhow::Result<Option<Identity<T>>> {
+    fn get_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<Option<Identity<T>>> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
@@ -149,10 +168,21 @@ where
             Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
         };
 
-        match direction {
-            Direction::Left => Ok(inner.left[level].clone()),
-            Direction::Right => Ok(inner.right[level].clone()),
-        }
+        let entry = match direction {
+            Direction::Left => inner.left[level].clone(),
+            Direction::Right => inner.right[level].clone(),
+        };
+        
+        // Log the get operation
+        let _enter = self.span.enter();
+        tracing::trace!(
+            "Get entry at level {} in direction {:?}: {:?}",
+            level,
+            direction,
+            entry.clone()
+        );
+        
+        Ok(entry)
     }
 
     /// Dynamically compares the lookup table with another for equality.
@@ -211,7 +241,7 @@ mod tests {
     #[test]
     /// A new lookup table should be empty.
     fn test_lookup_table_empty() {
-        let lt: ArrayLookupTable<Address> = ArrayLookupTable::new();
+        let lt: ArrayLookupTable<Address> = ArrayLookupTable::new(&span_fixture());
         for i in 0..model::IDENTIFIER_SIZE_BYTES {
             assert_eq!(None, lt.get_entry(i, Direction::Left).unwrap());
             assert_eq!(None, lt.get_entry(i, Direction::Right).unwrap());
@@ -223,7 +253,7 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then get them.
     /// The test will also try to get an entry at level 2, which should return an error.
     fn test_lookup_table_update_get() {
-        let mut lt = ArrayLookupTable::new();
+        let mut lt = ArrayLookupTable::new(&span_fixture());
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
@@ -240,7 +270,7 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then remove them.
     /// The test will then try to get the removed entries, which should return None.
     fn test_lookup_table_remove() {
-        let mut lt = ArrayLookupTable::new();
+        let mut lt = ArrayLookupTable::new(&span_fixture());
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
@@ -257,7 +287,7 @@ mod tests {
     #[test]
     /// Test updating entries at out-of-bound levels.
     fn test_lookup_table_out_of_bound() {
-        let mut lt = ArrayLookupTable::new();
+        let mut lt = ArrayLookupTable::new(&span_fixture());
         let id = random_network_identity();
 
         let result = lt.update_entry(id, model::IDENTIFIER_SIZE_BYTES, Direction::Left);
@@ -284,7 +314,7 @@ mod tests {
     /// The test will update the entry at level 0, then update it again with a different identity.
     /// The test will then get the entry at level 0, which should return the second identity.
     fn test_lookup_table_override() {
-        let lt = ArrayLookupTable::new();
+        let lt = ArrayLookupTable::new(&span_fixture());
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
@@ -321,7 +351,7 @@ mod tests {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
-        let lt = Arc::new(ArrayLookupTable::<Address>::new());
+        let lt = Arc::new(ArrayLookupTable::<Address>::new(&span_fixture()));
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
@@ -381,7 +411,7 @@ mod tests {
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
-        let lt = Arc::new(ArrayLookupTable::<Address>::new());
+        let lt = Arc::new(ArrayLookupTable::<Address>::new(&span_fixture()));
         let levels = 10;
         let identities = random_network_identities(2 * levels);
 
@@ -454,7 +484,7 @@ mod tests {
         // This data structure must be atomic as a read from both must be done atomically as well
         // as a write to both.
         let shared_context = Arc::new(Mutex::new((
-            ArrayLookupTable::<Address>::new(),
+            ArrayLookupTable::<Address>::new(&span_fixture()),
             HashMap::<(usize, Direction), Identity<Address>>::new(),
         )));
 

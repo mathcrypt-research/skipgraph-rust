@@ -79,7 +79,7 @@ impl Clone for LocalNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::testutil::fixtures::{random_identifier, random_membership_vector};
+    use crate::core::testutil::fixtures::{random_identifier, random_membership_vector, span_fixture};
     use crate::core::ArrayLookupTable;
 
     #[test]
@@ -89,7 +89,7 @@ mod tests {
         let node = LocalNode {
             id: id.clone(),
             mem_vec: mem_vec.clone(),
-            lt: Box::new(ArrayLookupTable::new()),
+            lt: Box::new(ArrayLookupTable::new(&span_fixture())),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
