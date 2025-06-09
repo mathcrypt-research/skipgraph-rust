@@ -1,4 +1,4 @@
-use crate::core::lookup::lookup_table::{LookupTableLevel, LookupTable};
+use crate::core::lookup::lookup_table::{LookupTable, LookupTableLevel};
 use crate::core::model;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
@@ -11,7 +11,7 @@ use tracing::{Level, Span};
 /// Caution: lookup table by itself is not thread-safe, should be used with an Arc<Mutex<LookupTable>>.
 pub struct ArrayLookupTable<T: Clone> {
     inner: RwLock<InnerArrayLookupTable<T>>,
-    span: Span
+    span: Span,
 }
 
 struct InnerArrayLookupTable<T> {
@@ -99,7 +99,7 @@ where
                 inner.right[level] = Some(identity.clone());
             }
         }
-        
+
         // Log the update operation
         let _enter = self.span.enter();
         tracing::trace!(
@@ -110,7 +110,7 @@ where
         );
         Ok(())
     }
-    
+
     /// Remove the entry at the given level and direction, and flips it to None.
     fn remove_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<()> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
@@ -130,7 +130,7 @@ where
             Direction::Left => inner.left[level].clone(),
             Direction::Right => inner.right[level].clone(),
         };
-        
+
         match direction {
             Direction::Left => {
                 inner.left[level] = None;
@@ -155,7 +155,11 @@ where
     /// Returns None if the entry does not exist.
     /// Returns Some(Identity) if the entry exists.
     /// Returns an error if the level is out of bounds.
-    fn get_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<Option<Identity<T>>> {
+    fn get_entry(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+    ) -> anyhow::Result<Option<Identity<T>>> {
         if level >= model::IDENTIFIER_SIZE_BYTES {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
@@ -172,7 +176,7 @@ where
             Direction::Left => inner.left[level].clone(),
             Direction::Right => inner.right[level].clone(),
         };
-        
+
         // Log the get operation
         let _enter = self.span.enter();
         tracing::trace!(
@@ -181,7 +185,7 @@ where
             direction,
             entry.clone()
         );
-        
+
         Ok(entry)
     }
 
@@ -253,12 +257,12 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then get them.
     /// The test will also try to get an entry at level 2, which should return an error.
     fn test_lookup_table_update_get() {
-        let mut lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new(&span_fixture());
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
-        lt.update_entry(id1, 0, Direction::Left).unwrap();
-        lt.update_entry(id2, 1, Direction::Right).unwrap();
+        lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        lt.update_entry(id2.clone(), 1, Direction::Right).unwrap();
 
         assert_eq!(Some(id1), lt.get_entry(0, Direction::Left).unwrap());
         assert_eq!(Some(id2), lt.get_entry(1, Direction::Right).unwrap());
@@ -270,7 +274,7 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then remove them.
     /// The test will then try to get the removed entries, which should return None.
     fn test_lookup_table_remove() {
-        let mut lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new(&span_fixture());
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
@@ -287,10 +291,10 @@ mod tests {
     #[test]
     /// Test updating entries at out-of-bound levels.
     fn test_lookup_table_out_of_bound() {
-        let mut lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new(&span_fixture());
         let id = random_network_identity();
 
-        let result = lt.update_entry(id, model::IDENTIFIER_SIZE_BYTES, Direction::Left);
+        let result = lt.update_entry(id.clone(), model::IDENTIFIER_SIZE_BYTES, Direction::Left);
         assert!(result.is_err());
 
         let result = lt.update_entry(id, model::IDENTIFIER_SIZE_BYTES, Direction::Right);
@@ -318,10 +322,10 @@ mod tests {
         let id1 = random_network_identity();
         let id2 = random_network_identity();
 
-        lt.update_entry(id1, 0, Direction::Left).unwrap();
+        lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
         assert_eq!(Some(id1), lt.get_entry(0, Direction::Left).unwrap());
 
-        lt.update_entry(id2, 0, Direction::Left).unwrap();
+        lt.update_entry(id2.clone(), 0, Direction::Left).unwrap();
 
         assert_eq!(Some(id2), lt.get_entry(0, Direction::Left).unwrap());
     }
@@ -357,24 +361,24 @@ mod tests {
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
         let levels = 10;
         let identities = random_network_identities(2 * levels);
-        
+
         for i in 0..levels {
             lt.update_entry(identities[i].clone(), i, Direction::Left)
                 .unwrap();
             lt.update_entry(identities[i + levels].clone(), i, Direction::Right)
                 .unwrap();
         }
-        
+
         // Number of reader threads
         let num_threads = identities.len();
         let barrier = Arc::new(Barrier::new(num_threads)); // to sync thread start
-        
+
         // Spawn threads to read the entries concurrently
         let mut handles = vec![];
-        for i in 0..num_threads {
+        for (i, id) in identities.iter().enumerate().take(num_threads) {
             let lt_ref = lt.clone();
             let barrier_ref = barrier.clone();
-            let id = identities[i].clone();
+            let id = id.clone();
             let handle = thread::spawn(move || {
                 barrier_ref.wait(); // wait for all threads to be ready
                 let level = i % levels; // alternate between left and right
@@ -383,17 +387,17 @@ mod tests {
                 } else {
                     Direction::Right
                 };
-        
+
                 // Read the entry
                 let entry = lt_ref.get_entry(level, direction).unwrap();
-        
+
                 // Check if the entry is correct
                 assert_eq!(entry, Some(id));
             });
-        
+
             handles.push(handle);
         }
-        
+
         // join all threads with a timeout
         let timeout = std::time::Duration::from_millis(100);
         join_all_with_timeout(handles.into_boxed_slice(), timeout).unwrap();
@@ -421,10 +425,10 @@ mod tests {
 
         // Spawn threads to write the entries concurrently
         let mut handles = vec![];
-        for i in 0..num_threads {
+        for (i, id) in identities.iter().enumerate().take(num_threads) {
             let lt_ref = lt.clone();
             let barrier_ref = barrier.clone();
-            let id = identities[i].clone();
+            let id = id.clone();
             let level = i % levels; // alternate between left and right
             let direction = if i < levels {
                 Direction::Left
@@ -436,7 +440,7 @@ mod tests {
                 barrier_ref.wait(); // wait for all threads to be ready
 
                 // Write the entry
-                lt_ref.update_entry(id, level, direction).unwrap();
+                lt_ref.update_entry(id.clone(), level, direction).unwrap();
 
                 // Read the entry back to check if it was written correctly
                 let entry = lt_ref.get_entry(level, direction).unwrap();
@@ -498,7 +502,6 @@ mod tests {
             let shared_ref = shared_context.clone();
             let barrier_ref = barrier.clone();
 
-
             let handle = thread::spawn(move || {
                 let mut rng = rand::rng();
                 barrier_ref.wait(); // wait for all threads to be ready
@@ -524,9 +527,8 @@ mod tests {
 
                             let last_write_opt = last_writes.get(&(level, direction)).cloned();
 
-
                             // Validates the read matches the last written value to the same (level, direction).
-                            match (read_val_opt, last_write_opt) {
+                            match (read_val_opt.clone(), last_write_opt.clone()) {
                                 (None, None) => { /* no entry, no last write, expected! */ }
                                 (Some(ref read_val), Some(ref last_write)) => {
                                     assert_eq!(

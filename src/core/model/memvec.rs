@@ -141,9 +141,9 @@ impl Display for MembershipVector {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::core::testutil::fixtures::random_membership_vector;
     use crate::core::testutil::random;
     use rand::Rng;
-    use crate::core::testutil::fixtures::random_membership_vector;
 
     extern crate rand;
     use crate::core::testutil::random::random_hex_str;
@@ -319,7 +319,7 @@ mod test {
 
         // two random membership vectors that differ only in a random bit
         //
-        let random_index = rand::thread_rng().gen_range(1..model::IDENTIFIER_SIZE_BYTES - 2);
+        let random_index = rand::rng().random_range(1..model::IDENTIFIER_SIZE_BYTES - 2);
         let left_bytes = random::bytes(random_index);
         let right_bytes = random::bytes(model::IDENTIFIER_SIZE_BYTES - random_index - 1);
 
@@ -345,7 +345,7 @@ mod test {
 
         // Case 2: at random index; they differ at a random bit
         let byte_1 = random::bytes(1)[0];
-        let random_bit_index = rand::thread_rng().gen_range(0..8);
+        let random_bit_index = rand::rng().random_range(0..8);
         let byte_2 = byte_1 ^ (1 << random_bit_index);
         println!(
             "byte_1: {:8b}, byte_2: {:8b}, random_bit_index: {}, random_index: {}",
@@ -398,7 +398,7 @@ mod test {
             "a738f14dc0750b7f7e4c418fdda32c424e9ecf7280892d14648e405466a76f29",
         ).unwrap();
         
-        for p in (0..model::IDENTIFIER_SIZE_BYTES * 8 - 1) {
+        for p in 0..model::IDENTIFIER_SIZE_BYTES * 8 - 1 {
             assert_valid_decompose(&mv, p, mv.decompose_at_bit(p));
         }
     }
@@ -410,7 +410,7 @@ mod test {
         for _ in 0..1000 {
             let mv = random_membership_vector();
             
-            for p in (0..model::IDENTIFIER_SIZE_BYTES * 8 - 1) {
+            for p in 0..model::IDENTIFIER_SIZE_BYTES * 8 - 1 {
                 assert_valid_decompose(&mv, p, mv.decompose_at_bit(p));
             }
         }

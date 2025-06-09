@@ -87,8 +87,8 @@ mod tests {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let node = LocalNode {
-            id: id.clone(),
-            mem_vec: mem_vec.clone(),
+            id,
+            mem_vec,
             lt: Box::new(ArrayLookupTable::new(&span_fixture())),
         };
         assert_eq!(node.get_identifier(), &id);

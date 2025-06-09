@@ -59,8 +59,8 @@ pub fn random_network_lookup_table(n: usize) -> ArrayLookupTable<Address> {
     let lt = ArrayLookupTable::new(&span_fixture());
     let ids = random_network_identities(2 * n);
     for i in 0..n {
-        lt.update_entry(ids[i], i, Direction::Left).unwrap();
-        lt.update_entry(ids[i + n], i, Direction::Right).unwrap();
+        lt.update_entry(ids[i].clone(), i, Direction::Left).unwrap();
+        lt.update_entry(ids[i + n].clone(), i, Direction::Right).unwrap();
     }
     lt
 }
@@ -114,12 +114,14 @@ where T : Send + 'static {
 /// 1. Spawn a new thread that will join the target thread.
 /// 2. Use a channel to send the result of the join back to the main thread.
 /// 3. If the join takes too long, the main thread will timeout and return an error.
-/// Arguments:
-/// * handle: The JoinHandle<T> to join.
-/// * timeout: The maximum time to wait for the thread to finish.
-/// Returns:
-/// * Ok(()) if the thread finishes within the timeout.
-/// * Err(String) if the thread takes longer than the timeout or panics.
+///    Arguments:
+///    * handle: The JoinHandle<T> to join.
+///    * timeout: The maximum time to wait for the thread to finish.
+///   
+///   Returns:
+///
+///   * Ok(()) if the thread finishes within the timeout.
+///   * Err(String) if the thread takes longer than the timeout or panics.
 pub fn join_with_timeout<T>(handle: JoinHandle<T>, timeout: Duration) -> Result<(), String>
 where T : Send + 'static {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -133,7 +135,7 @@ where T : Send + 'static {
     if let Ok(join_res) = rx.recv_timeout(timeout) {
         join_thread.join().expect("Failed to join thread");
         match join_res {
-            Ok(res) => Ok(()),
+            Ok(_) => Ok(()),
             Err(e) => Err(format!("Thread panicked: {:?}", e)),
         }
     } else {

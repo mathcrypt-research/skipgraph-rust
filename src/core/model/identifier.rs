@@ -1,7 +1,7 @@
 use crate::core::model;
 use crate::core::model::identifier::ComparisonResult::{CompareEqual, CompareGreater, CompareLess};
 use crate::core::model::IDENTIFIER_SIZE_BYTES;
-use anyhow::{anyhow};
+use anyhow::anyhow;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
@@ -150,7 +150,6 @@ mod tests {
     use crate::core::testutil::fixtures::random_membership_vector;
     use crate::core::testutil::random::random_hex_str;
     use crate::core::testutil::*;
-    use std::io::Read;
 
     #[test]
     fn test_identifier_from_bytes() {
@@ -219,9 +218,9 @@ mod tests {
 
     #[test]
     fn test_identifier_compare() {
-        let id_0 = Identifier::from_bytes(&vec![0u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
-        let id_1 = Identifier::from_bytes(&vec![127u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
-        let id_2 = Identifier::from_bytes(&vec![255u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
+        let id_0 = Identifier::from_bytes(&[0u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
+        let id_1 = Identifier::from_bytes(&[127u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
+        let id_2 = Identifier::from_bytes(&[255u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
 
         // each id is equal to itself
         let comp = id_0.compare(&id_0);
