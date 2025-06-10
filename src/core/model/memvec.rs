@@ -1,9 +1,9 @@
 use crate::core::model;
 use anyhow::{anyhow, Context};
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MembershipVector([u8; model::IDENTIFIER_SIZE_BYTES]);
 
 /// A struct representing a membership vector with a fixed size of 32 bytes.
@@ -137,6 +137,15 @@ impl Display for MembershipVector {
         write!(f, "{}", hex::encode(self.0))
     }
 }
+
+// Override Debug to also call Display
+impl Debug for MembershipVector {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // This ensures both {:?} and {:#?} produce the same output as Display.
+        write!(f, "{}", self)
+    }
+}
+
 
 #[cfg(test)]
 mod test {

@@ -3,7 +3,7 @@ use crate::core::model::identifier::ComparisonResult::{CompareEqual, CompareGrea
 use crate::core::model::IDENTIFIER_SIZE_BYTES;
 use anyhow::anyhow;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
 /// ComparisonResult represents the result of comparing two identifiers.
 /// It can be one of the following:
@@ -73,8 +73,8 @@ impl Display for ComparisonContext {
 }
 
 // Identifier represents a 32-byte unique identifier for a Skip Graph node.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
-pub struct Identifier([u8; model::IDENTIFIER_SIZE_BYTES]);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Identifier([u8; IDENTIFIER_SIZE_BYTES]);
 
 impl Identifier {
     pub fn compare(&self, other: &Identifier) -> ComparisonContext {
@@ -143,6 +143,15 @@ impl Display for Identifier {
         write!(f, "{}", hex::encode(self.0))
     }
 }
+
+// Override Debug to also call Display
+impl Debug for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // This ensures both {:?} and {:#?} produce the same output as Display.
+        write!(f, "{}", self)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
