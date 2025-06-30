@@ -7,37 +7,38 @@ use std::fmt::{Debug, Formatter};
 use std::sync::RwLock;
 use tracing::{Level, Span};
 
+/// The number of levels in the lookup table is determined by the size of the identifier in bits (that is
+/// `IDENTIFIER_SIZE_BYTES * 8`).
+pub const LOOKUP_TABLE_LEVELS: usize = model::IDENTIFIER_SIZE_BYTES * 8;
+
 /// It is a 2D array of Identity, where the first dimension is the level and the second dimension is the direction.
 /// Caution: lookup table by itself is not thread-safe, should be used with an Arc<Mutex<LookupTable>>.
-pub struct ArrayLookupTable<T: Clone> {
-    inner: RwLock<InnerArrayLookupTable<T>>,
+pub struct ArrayLookupTable {
+    inner: RwLock<InnerArrayLookupTable>,
     span: Span,
 }
 
-struct InnerArrayLookupTable<T> {
-    left: Vec<Option<Identity<T>>>,
-    right: Vec<Option<Identity<T>>>,
+struct InnerArrayLookupTable {
+    left: Vec<Option<Identity>>,
+    right: Vec<Option<Identity>>,
 }
 
-impl<T> ArrayLookupTable<T>
-where
-    T: Clone,
-{
+impl ArrayLookupTable {
     /// Create a new empty LookupTable instance.
-    pub fn new(parent_span: &Span) -> ArrayLookupTable<T> {
+    pub fn new(parent_span: &Span) -> ArrayLookupTable {
         let span = tracing::span!(parent: parent_span, Level::INFO, "array_lookup_table");
 
         ArrayLookupTable {
             inner: RwLock::new(InnerArrayLookupTable {
-                left: vec![None; model::IDENTIFIER_SIZE_BYTES],
-                right: vec![None; model::IDENTIFIER_SIZE_BYTES],
+                left: vec![None; LOOKUP_TABLE_LEVELS],
+                right: vec![None; LOOKUP_TABLE_LEVELS],
             }),
             span,
         }
     }
 }
 
-impl<T: Clone> Clone for ArrayLookupTable<T> {
+impl Clone for ArrayLookupTable {
     fn clone(&self) -> Self {
         // Create a new instance of ArrayLookupTable with the same data
         let inner = self.inner.read().unwrap();
@@ -51,10 +52,7 @@ impl<T: Clone> Clone for ArrayLookupTable<T> {
     }
 }
 
-impl<T> Debug for ArrayLookupTable<T>
-where
-    T: Clone + Debug,
-{
+impl Debug for ArrayLookupTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let inner = match self.inner.read() {
             Ok(guard) => guard,
@@ -68,18 +66,15 @@ where
     }
 }
 
-impl<T> LookupTable<T> for ArrayLookupTable<T>
-where
-    T: Clone + Debug + 'static + PartialEq,
-{
+impl LookupTable for ArrayLookupTable {
     /// Update the entry at the given level and direction.
     fn update_entry(
         &self,
-        identity: Identity<T>,
+        identity: Identity,
         level: LookupTableLevel,
         direction: Direction,
     ) -> anyhow::Result<()> {
-        if level >= model::IDENTIFIER_SIZE_BYTES {
+        if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
                 level
@@ -113,7 +108,7 @@ where
 
     /// Remove the entry at the given level and direction, and flips it to None.
     fn remove_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<()> {
-        if level >= model::IDENTIFIER_SIZE_BYTES {
+        if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
                 level
@@ -159,8 +154,8 @@ where
         &self,
         level: LookupTableLevel,
         direction: Direction,
-    ) -> anyhow::Result<Option<Identity<T>>> {
-        if level >= model::IDENTIFIER_SIZE_BYTES {
+    ) -> anyhow::Result<Option<Identity>> {
+        if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
                 "Position is larger than the max lookup table entry number: {}",
                 level
@@ -192,7 +187,7 @@ where
     /// Dynamically compares the lookup table with another for equality.
     /// This is a deep comparison of the entries in the table.
     /// Returns true if the entries are equal, false otherwise.
-    fn equal(&self, other: &dyn LookupTable<T>) -> bool {
+    fn equal(&self, other: &dyn LookupTable) -> bool {
         // iterates over the levels and compares the entries in the left and right directions
         let inner = match self.inner.read() {
             Ok(guard) => guard,
@@ -221,15 +216,44 @@ where
         true
     }
 
-    fn clone_box(&self) -> Box<dyn LookupTable<T>> {
+    /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
+    fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+        let inner = match self.inner.read() {
+            Ok(guard) => guard,
+            Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
+        };
+
+        let mut neighbors = Vec::new();
+        for (level, entry) in inner.left.iter().enumerate() {
+            if let Some(identity) = entry {
+                neighbors.push((level, identity.clone()));
+            }
+        }
+        Ok(neighbors)
+    }
+
+    /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
+    fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+        let inner = match self.inner.read() {
+            Ok(guard) => guard,
+            Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
+        };
+
+        let mut neighbors = Vec::new();
+        for (level, entry) in inner.right.iter().enumerate() {
+            if let Some(identity) = entry {
+                neighbors.push((level, identity.clone()));
+            }
+        }
+        Ok(neighbors)
+    }
+
+    fn clone_box(&self) -> Box<dyn LookupTable> {
         Box::new(self.clone())
     }
 }
 
-impl<T> PartialEq for ArrayLookupTable<T>
-where
-    T: Clone + Debug + 'static + PartialEq,
-{
+impl PartialEq for ArrayLookupTable {
     fn eq(&self, other: &Self) -> bool {
         self.equal(other)
     }
@@ -239,13 +263,12 @@ where
 mod tests {
     use super::*;
     use crate::core::testutil::fixtures::*;
-    use crate::core::Address;
     use std::collections::HashMap;
 
     #[test]
     /// A new lookup table should be empty.
     fn test_lookup_table_empty() {
-        let lt: ArrayLookupTable<Address> = ArrayLookupTable::new(&span_fixture());
+        let lt: ArrayLookupTable = ArrayLookupTable::new(&span_fixture());
         for i in 0..model::IDENTIFIER_SIZE_BYTES {
             assert_eq!(None, lt.get_entry(i, Direction::Left).unwrap());
             assert_eq!(None, lt.get_entry(i, Direction::Right).unwrap());
@@ -258,8 +281,8 @@ mod tests {
     /// The test will also try to get an entry at level 2, which should return an error.
     fn test_lookup_table_update_get() {
         let lt = ArrayLookupTable::new(&span_fixture());
-        let id1 = random_network_identity();
-        let id2 = random_network_identity();
+        let id1 = random_identity();
+        let id2 = random_identity();
 
         lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
         lt.update_entry(id2.clone(), 1, Direction::Right).unwrap();
@@ -275,8 +298,8 @@ mod tests {
     /// The test will then try to get the removed entries, which should return None.
     fn test_lookup_table_remove() {
         let lt = ArrayLookupTable::new(&span_fixture());
-        let id1 = random_network_identity();
-        let id2 = random_network_identity();
+        let id1 = random_identity();
+        let id2 = random_identity();
 
         lt.update_entry(id1, 0, Direction::Left).unwrap();
         lt.update_entry(id2, 1, Direction::Right).unwrap();
@@ -292,24 +315,24 @@ mod tests {
     /// Test updating entries at out-of-bound levels.
     fn test_lookup_table_out_of_bound() {
         let lt = ArrayLookupTable::new(&span_fixture());
-        let id = random_network_identity();
+        let id = random_identity();
 
-        let result = lt.update_entry(id.clone(), model::IDENTIFIER_SIZE_BYTES, Direction::Left);
+        let result = lt.update_entry(id.clone(), LOOKUP_TABLE_LEVELS, Direction::Left);
         assert!(result.is_err());
 
-        let result = lt.update_entry(id, model::IDENTIFIER_SIZE_BYTES, Direction::Right);
+        let result = lt.update_entry(id, LOOKUP_TABLE_LEVELS, Direction::Right);
         assert!(result.is_err());
 
-        let result = lt.get_entry(model::IDENTIFIER_SIZE_BYTES, Direction::Left);
+        let result = lt.get_entry(LOOKUP_TABLE_LEVELS, Direction::Left);
         assert!(result.is_err());
 
-        let result = lt.get_entry(model::IDENTIFIER_SIZE_BYTES, Direction::Right);
+        let result = lt.get_entry(LOOKUP_TABLE_LEVELS, Direction::Right);
         assert!(result.is_err());
 
-        let result = lt.remove_entry(model::IDENTIFIER_SIZE_BYTES, Direction::Left);
+        let result = lt.remove_entry(LOOKUP_TABLE_LEVELS, Direction::Left);
         assert!(result.is_err());
 
-        let result = lt.remove_entry(model::IDENTIFIER_SIZE_BYTES, Direction::Right);
+        let result = lt.remove_entry(LOOKUP_TABLE_LEVELS, Direction::Right);
         assert!(result.is_err());
     }
 
@@ -319,8 +342,8 @@ mod tests {
     /// The test will then get the entry at level 0, which should return the second identity.
     fn test_lookup_table_override() {
         let lt = ArrayLookupTable::new(&span_fixture());
-        let id1 = random_network_identity();
-        let id2 = random_network_identity();
+        let id1 = random_identity();
+        let id2 = random_identity();
 
         lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
         assert_eq!(Some(id1), lt.get_entry(0, Direction::Left).unwrap());
@@ -337,8 +360,8 @@ mod tests {
     /// The test will also check if the lookup table is equal to itself.
     /// The test will also check if the lookup table is not equal to None.
     fn test_lookup_table_equality() {
-        let lt1 = random_network_lookup_table(10);
-        let lt2 = random_network_lookup_table(10);
+        let lt1 = random_lookup_table(10);
+        let lt2 = random_lookup_table(10);
 
         assert_ne!(lt1, lt2); // check if two random lookup tables are not equal
         assert_eq!(lt1, lt1); // check if the lookup table is equal to itself
@@ -355,12 +378,12 @@ mod tests {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
-        let lt = Arc::new(ArrayLookupTable::<Address>::new(&span_fixture()));
+        let lt = Arc::new(ArrayLookupTable::new(&span_fixture()));
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
         let levels = 10;
-        let identities = random_network_identities(2 * levels);
+        let identities = random_identities(2 * levels);
 
         for i in 0..levels {
             lt.update_entry(identities[i].clone(), i, Direction::Left)
@@ -415,9 +438,9 @@ mod tests {
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
-        let lt = Arc::new(ArrayLookupTable::<Address>::new(&span_fixture()));
+        let lt = Arc::new(ArrayLookupTable::new(&span_fixture()));
         let levels = 10;
-        let identities = random_network_identities(2 * levels);
+        let identities = random_identities(2 * levels);
 
         // Number of writer threads
         let num_threads = identities.len();
@@ -488,8 +511,8 @@ mod tests {
         // This data structure must be atomic as a read from both must be done atomically as well
         // as a write to both.
         let shared_context = Arc::new(Mutex::new((
-            ArrayLookupTable::<Address>::new(&span_fixture()),
-            HashMap::<(usize, Direction), Identity<Address>>::new(),
+            ArrayLookupTable::new(&span_fixture()),
+            HashMap::<(usize, Direction), Identity>::new(),
         )));
 
         let num_threads = 100;
@@ -555,7 +578,7 @@ mod tests {
                             // write
                             let (table, last_writes) = &mut *shared_ref.lock().unwrap();
 
-                            let id = random_network_identity();
+                            let id = random_identity();
                             if table.update_entry(id.clone(), level, direction).is_ok() {
                                 // Update the last write map upon successful write
                                 last_writes.insert((level, direction), id);
@@ -579,5 +602,29 @@ mod tests {
         // join all threads with a timeout
         let timeout = std::time::Duration::from_secs(10);
         join_all_with_timeout(handles.into_boxed_slice(), timeout).unwrap();
+    }
+
+    /// Tests the retrieval of left and right neighbors from the lookup table.
+    #[test]
+    fn test_left_and_right_neighbors() {
+        let lt = random_lookup_table(LOOKUP_TABLE_LEVELS);
+
+        let rights = lt.right_neighbors().unwrap();
+        assert_eq!(rights.len(), LOOKUP_TABLE_LEVELS);
+        for (level, identity) in rights.iter() {
+            assert_eq!(
+                lt.get_entry(*level, Direction::Right).unwrap(),
+                Some(identity.clone())
+            );
+        }
+
+        let lefts = lt.left_neighbors().unwrap();
+        assert_eq!(lefts.len(), LOOKUP_TABLE_LEVELS);
+        for (level, identity) in lefts.iter() {
+            assert_eq!(
+                lt.get_entry(*level, Direction::Left).unwrap(),
+                Some(identity.clone())
+            );
+        }
     }
 }

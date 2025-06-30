@@ -1,11 +1,12 @@
 mod lookup;
 pub mod model;
+mod node;
+mod search;
 #[cfg(test)]
 pub mod testutil;
-mod search;
-mod node;
 
 pub use crate::core::lookup::array_lookup_table::ArrayLookupTable;
+pub use crate::core::lookup::array_lookup_table::LOOKUP_TABLE_LEVELS;
 pub use crate::core::lookup::lookup_table::LookupTable;
 pub use crate::core::model::address::Address;
 pub use crate::core::model::identifier::Identifier;

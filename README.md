@@ -4,16 +4,17 @@ An open-source implementation of Skip Graphs middleware written in Rust.
 
 ## Overview
 
-[Skip Graph](https://arxiv.org/pdf/cs.DS/0306043) is a distributed data structure designed to achieve efficient search, insert, and delete operations over a dynamic peer-to-peer 
-network. 
-This project provides a Rust-based implementation of Skip Graph middleware, suitable for building distributed systems requiring a P2P routing 
+[Skip Graph](https://arxiv.org/pdf/cs.DS/0306043) is a distributed data structure designed to achieve efficient search, insert, and delete operations
+over a dynamic peer-to-peer
+network.
+This project provides a Rust-based implementation of Skip Graph middleware, suitable for building distributed systems requiring a P2P routing
 overlay or distributed key-value store.
 
 ## Prerequisites
 
 To use or contribute to this project, you need to have the following installed:
 
-- **Rust**: Ensure you have Rust installed. You can download it from [Rust's official website](https://rust-lang.org/). The minimum required 
+- **Rust**: Ensure you have Rust installed. You can download it from [Rust's official website](https://rust-lang.org/). The minimum required
   version is `rustc 1.85.1 (4eb161250 2025-03-15)`.
 - **Cargo**: Cargo is the Rust package manager and is included with the Rust installation. The minimum required version is `cargo 1.85.1 
 (d73d2caf9 2024-12-31)`.
@@ -41,6 +42,7 @@ make install-tools
 ```
 
 This command will:
+
 - Install and update Rust, if necessary.
 - Install the `clippy` component for linting.
 
@@ -74,7 +76,8 @@ If you want to extend the tooling provided by this project, add new tasks to the
 
 ### Contributing
 
-Contributions to this project are welcome! Feel free to fork the repository, make your changes, and submit a pull request. Ensure you follow these steps before submitting:
+Contributions to this project are welcome! Feel free to fork the repository, make your changes, and submit a pull request. Ensure you follow these
+steps before submitting:
 
 1. Run the tests using `make test`.
 2. Lint the code using `make lint`.

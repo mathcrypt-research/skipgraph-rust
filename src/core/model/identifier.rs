@@ -5,6 +5,17 @@ use anyhow::anyhow;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 
+/// A constant representing the zero value for the `Identifier` type.
+///
+/// This constant initializes an `Identifier` with all bytes set to zero.
+pub const ZERO: Identifier = Identifier([0u8; IDENTIFIER_SIZE_BYTES]);
+
+/// `MAX` is a constant of type `Identifier` that represents the maximum possible value
+/// for an `Identifier`. It is initialized with an array of 255 (the maximum value for a
+/// single byte) repeated across all elements of the array, with a size equal to
+/// `IDENTIFIER_SIZE_BYTES`.
+pub const MAX: Identifier = Identifier([255u8; IDENTIFIER_SIZE_BYTES]);
+
 /// ComparisonResult represents the result of comparing two identifiers.
 /// It can be one of the following:
 /// - CompareGreater: the left identifier is greater than the right identifier.
@@ -73,7 +84,7 @@ impl Display for ComparisonContext {
 }
 
 // Identifier represents a 32-byte unique identifier for a Skip Graph node.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Identifier([u8; IDENTIFIER_SIZE_BYTES]);
 
 impl Identifier {
@@ -152,33 +163,73 @@ impl Debug for Identifier {
     }
 }
 
+impl Ord for Identifier {
+    fn cmp(&self, other: &Identifier) -> std::cmp::Ordering {
+        match self.compare(other).result {
+            CompareLess => std::cmp::Ordering::Less,
+            CompareEqual => std::cmp::Ordering::Equal,
+            CompareGreater => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+impl PartialOrd for Identifier {
+    fn partial_cmp(&self, other: &Identifier) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::testutil::fixtures::random_membership_vector;
+    use crate::core::testutil::fixtures::random_identifier;
     use crate::core::testutil::random::random_hex_str;
     use crate::core::testutil::*;
 
+    /// Tests the `Identifier::from_bytes` method with various types and sizes of byte arrays.
+    ///
+    /// This test covers the following scenarios:
+    /// 1. Converts 32 bytes of zeros into an `Identifier` and asserts that converting back
+    ///    to bytes gives the same input.
+    /// 2. Converts 32 bytes of ones (all `255u8`) into an `Identifier` and asserts that
+    ///    converting back to bytes gives the same input.
+    /// 3. Converts 32 bytes of randomly generated data into an `Identifier` and asserts that
+    ///    converting back to bytes gives the same input.
+    /// 4. Converts 31 bytes of randomly generated data into an `Identifier` and checks that
+    ///    the resulting `Identifier` is padded with a zero byte at the beginning when
+    ///    converting back to bytes.
+    /// 5. Attempts to convert 33 bytes of randomly generated data into an `Identifier`.
+    ///    Asserts that this returns an error since the input length exceeds the valid size.
+    ///
+    /// Dependencies:
+    /// - `Identifier::from_bytes` is expected to process exactly `IDENTIFIER_SIZE_BYTES` bytes
+    ///   as input, pad with zero when the input is below the expected size, and return an
+    ///   error when the input exceeds the expected size.
+    /// - The `random::bytes` function is used to generate random input data for testing.
+    ///
+    /// Note:
+    /// - `IDENTIFIER_SIZE_BYTES` is assumed to be 32 based on the context of the test.
+    /// - The test cases verify both the ability to create `Identifier` from bytes and verify
+    ///   round-trip consistency when converting the `Identifier` back to bytes.
     #[test]
     fn test_identifier_from_bytes() {
         // 32 bytes of zero
-        let bytes = [0u8; model::IDENTIFIER_SIZE_BYTES];
+        let bytes = [0u8; IDENTIFIER_SIZE_BYTES];
         let identifier = Identifier::from_bytes(&bytes).unwrap();
         assert_eq!(identifier.to_bytes(), bytes.to_vec());
 
         // 32 bytes of one
-        let bytes = [255u8; model::IDENTIFIER_SIZE_BYTES];
+        let bytes = [255u8; IDENTIFIER_SIZE_BYTES];
         let identifier = Identifier::from_bytes(&bytes).unwrap();
         assert_eq!(identifier.to_bytes(), bytes.to_vec());
 
         // 32 bytes random input
-        let bytes = random::bytes(model::IDENTIFIER_SIZE_BYTES);
+        let bytes = random::bytes(IDENTIFIER_SIZE_BYTES);
         let identifier = Identifier::from_bytes(&bytes).unwrap();
         assert_eq!(identifier.to_bytes(), bytes);
 
         // 31 bytes random input; should be padded with 0
-        let bytes = random::bytes(model::IDENTIFIER_SIZE_BYTES - 1);
+        let bytes = random::bytes(IDENTIFIER_SIZE_BYTES - 1);
         let identifier = Identifier::from_bytes(&bytes).unwrap();
         assert_eq!(identifier.to_bytes()[1..], bytes);
         assert_eq!(identifier.to_bytes()[0], 0);
@@ -189,6 +240,38 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Unit tests for the `from_string` method of the `Identifier` struct.
+    ///
+    /// These tests validate the functionality and error handling behavior of the `from_string` method
+    /// when working with input strings of varying lengths and content:
+    ///
+    /// - Correctly converts 32-byte zero-padded hexadecimal input into an `Identifier`.
+    /// - Correctly converts 32-byte all-ones hexadecimal input into an `Identifier`.
+    /// - Correctly converts random 32-byte hexadecimal input into an `Identifier`.
+    /// - Handles 31-byte input by left-padding with zeroes to create a valid `Identifier`.
+    /// - Returns an error when given input that exceeds 32 bytes.
+    ///
+    /// Test Scenarios:
+    ///
+    /// 1. **32 Bytes All Zeroes**
+    ///    - Input: A hexadecimal string representing 32 bytes of zero (`0x00`).
+    ///    - Behavior: Converts this into an `Identifier` and ensures its underlying byte array equals 32 bytes of zero.
+    ///
+    /// 2. **32 Bytes All Ones**
+    ///    - Input: A hexadecimal string representing 32 bytes of `0xFF`.
+    ///    - Behavior: Converts this into an `Identifier` and ensures its underlying byte array equals 32 bytes of `0xFF`.
+    ///
+    /// 3. **Random 32 Bytes**
+    ///    - Input: A valid random 32-byte hexadecimal string.
+    ///    - Behavior: Converts this into an `Identifier` and ensures its underlying byte representation matches the expected byte array (decoded from the input string).
+    ///
+    /// 4. **31 Bytes**
+    ///    - Input: A valid random 31-byte hexadecimal string.
+    ///    - Behavior: Converts this into an `Identifier` by left-padding one byte of zero, and ensures the resulting byte array starts with a zero byte followed by the expected bytes for the 31-byte input.
+    ///
+    /// 5. **33 Bytes**
+    ///    - Input: A valid random 33-byte hexadecimal string.
+    ///    - Behavior: Fails and returns an error, signaling that only input up to 32 bytes is allowed.
     #[test]
     fn test_identifier_from_string() {
         // 32 bytes zero
@@ -225,6 +308,35 @@ mod tests {
         assert!(Identifier::from_string(&s).is_err())
     }
 
+    /// Test function `test_identifier_compare` verifies the behavior and correctness of the `Identifier`
+    /// comparison functionality implemented in the system. It tests various comparison scenarios including:
+    ///
+    /// 1. Equality comparisons for identifiers that are identical.
+    /// 2. Ordering comparisons (less than, greater than) between identifiers with different values.
+    /// 3. Single-byte differences between two identifiers at a specific index.
+    ///
+    /// The test ensures that all aspects of the `compare` method are working as intended,
+    /// including:
+    /// - Determining the comparison result (`CompareEqual`, `CompareLess`, `CompareGreater`).
+    /// - Validating that the left-hand side and right-hand side values are accurately assigned.
+    /// - Identifying the first differing byte index when applicable.
+    /// - Properly formatting the comparison result string.
+    ///
+    /// Specifically:
+    /// - It creates multiple `Identifier` instances with predefined and random values.
+    /// - Asserts that identifiers are equal to themselves.
+    /// - Validates comparisons between identifiers, ensuring the results and metadata (e.g., differing byte index)
+    ///   meet expectations.
+    /// - Tests comparisons of identifiers generated with random byte sequences that differ only at
+    ///   a specific location.
+    ///
+    /// Examples of tested comparisons:
+    /// - Equality: Verifies that `id_0.compare(&id_0)` correctly determines equality (`id_0 == id_0`).
+    /// - Ordering: Verifies relationships like `id_0 < id_1` and `id_1 > id_0`.
+    /// - Single-byte difference: Confirms correctness for identifiers differing by a single byte, ensuring the differing
+    ///   byte index is identified and result is consistent.
+    ///
+    /// This ensures the integrity and performance of the `Identifier` comparison logic across edge cases.
     #[test]
     fn test_identifier_compare() {
         let id_0 = Identifier::from_bytes(&[0u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
@@ -233,6 +345,7 @@ mod tests {
 
         // each id is equal to itself
         let comp = id_0.compare(&id_0);
+        assert_eq!(id_0, id_0);
         assert_eq!(CompareEqual, comp.result);
         assert_eq!(id_0, comp.left);
         assert_eq!(id_0, comp.right);
@@ -240,6 +353,7 @@ mod tests {
         assert_eq!(comp.to_string(), format!("{} == {}", id_0, id_0));
 
         let comp = id_1.compare(&id_1);
+        assert_eq!(id_1, id_1);
         assert_eq!(CompareEqual, comp.result);
         assert_eq!(id_1, comp.left);
         assert_eq!(id_1, comp.right);
@@ -247,6 +361,7 @@ mod tests {
         assert_eq!(comp.to_string(), format!("{} == {}", id_1, id_1));
 
         let comp = id_2.compare(&id_2);
+        assert_eq!(id_2, id_2);
         assert_eq!(CompareEqual, comp.result);
         assert_eq!(id_2, comp.left);
         assert_eq!(id_2, comp.right);
@@ -255,6 +370,7 @@ mod tests {
 
         // id_0 < id_1
         let comp = id_0.compare(&id_1);
+        assert!(id_0 < id_1);
         assert_eq!(CompareLess, comp.result);
         assert_eq!(id_0, comp.left);
         assert_eq!(id_1, comp.right);
@@ -262,6 +378,7 @@ mod tests {
         assert_eq!(comp.to_string(), "00 < 7f (at byte 0)");
 
         let comp = id_1.compare(&id_0);
+        assert!(id_1 > id_0);
         assert_eq!(CompareGreater, comp.result);
         assert_eq!(id_1, comp.left);
         assert_eq!(id_0, comp.right);
@@ -270,6 +387,7 @@ mod tests {
 
         // id_1 < id_2
         let comp = id_1.compare(&id_2);
+        assert!(id_1 < id_2);
         assert_eq!(CompareLess, comp.result);
         assert_eq!(id_1, comp.left);
         assert_eq!(id_2, comp.right);
@@ -277,6 +395,7 @@ mod tests {
         assert_eq!(comp.to_string(), "7f < ff (at byte 0)");
 
         let comp = id_2.compare(&id_1);
+        assert!(id_2 > id_1);
         assert_eq!(CompareGreater, comp.result);
         assert_eq!(id_2, comp.left);
         assert_eq!(id_1, comp.right);
@@ -285,6 +404,7 @@ mod tests {
 
         // id_0 < id_2
         let comp = id_0.compare(&id_2);
+        assert!(id_0 < id_2);
         assert_eq!(CompareLess, comp.result);
         assert_eq!(id_0, comp.left);
         assert_eq!(id_2, comp.right);
@@ -292,6 +412,7 @@ mod tests {
         assert_eq!(comp.to_string(), "00 < ff (at byte 0)");
 
         let comp = id_2.compare(&id_0);
+        assert!(id_2 > id_0);
         assert_eq!(CompareGreater, comp.result);
         assert_eq!(id_2, comp.left);
         assert_eq!(id_0, comp.right);
@@ -312,6 +433,7 @@ mod tests {
 
         // each identifier is equal to itself
         let comp = id_random_greater.compare(&id_random_greater);
+        assert_eq!(id_random_greater, id_random_greater);
         assert_eq!(CompareEqual, comp.result);
         assert_eq!(id_random_greater, comp.left);
         assert_eq!(id_random_greater, comp.right);
@@ -322,6 +444,7 @@ mod tests {
         );
 
         let comp = id_random_less.compare(&id_random_less);
+        assert_eq!(id_random_less, id_random_less);
         assert_eq!(CompareEqual, comp.result);
         assert_eq!(id_random_less, comp.left);
         assert_eq!(id_random_less, comp.right);
@@ -329,6 +452,7 @@ mod tests {
 
         // id_random_greater > id_random_less
         let comp = id_random_greater.compare(&id_random_less);
+        assert!(id_random_greater > id_random_less);
         assert_eq!(CompareGreater, comp.result);
         assert_eq!(id_random_greater, comp.left);
         assert_eq!(id_random_less, comp.right);
@@ -345,6 +469,7 @@ mod tests {
 
         // id_random_less < id_random_greater
         let comp = id_random_less.compare(&id_random_greater);
+        assert!(id_random_less < id_random_greater);
         assert_eq!(CompareLess, comp.result);
         assert_eq!(id_random_less, comp.left);
         assert_eq!(id_random_greater, comp.right);
@@ -360,10 +485,17 @@ mod tests {
         );
     }
 
+    /// Tests the conversion of an `Identifier` to a `String` and back to an `Identifier`.
+    ///
+    /// This test generates a random `Identifier`, converts it to a `String` representation,
+    /// and then attempts to convert it back into an `Identifier` using the `from_string` method.
+    /// Finally, it asserts that the original `Identifier` and the resulting `Identifier`
+    /// are equal, verifying the correctness and consistency of the conversion process.
     #[test]
     fn test_identifier_to_string() {
-        let id = random_membership_vector();
+        let id = random_identifier();
         let id_str = id.to_string();
-        println!("{}", id_str);
+        let id_from_str = Identifier::from_string(&id_str).unwrap();
+        assert_eq!(id, id_from_str);
     }
 }

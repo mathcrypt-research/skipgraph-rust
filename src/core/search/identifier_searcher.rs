@@ -12,7 +12,7 @@ trait IdentifierSearcher<T> {
     /// If the lookup table is empty in that direction, returns None.
     fn search_by_id(
         &self,
-        lookup_table: &dyn LookupTable<T>,
+        lookup_table: &dyn LookupTable,
         search_req: IdentifierSearchRequest,
-    ) -> anyhow::Result<IdentifierSearchResult<T>>;
+    ) -> anyhow::Result<IdentifierSearchResult>;
 }
