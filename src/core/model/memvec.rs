@@ -146,7 +146,6 @@ impl Debug for MembershipVector {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -382,7 +381,6 @@ mod test {
         );
     }
 
-    
     /// Test decomposing the prefix at a given pivot bit index. Both the membership vector and the pivot are fixed in this test.
     /// This is the minimum test case for the decompose_at_bit method.
     #[test]
@@ -399,36 +397,41 @@ mod test {
             "0b7f7e4c418fdda32c424e9ecf7280892d14648e405466a76f29"
         );
     }
-    
+
     /// Test decomposing the prefix at a given pivot bit index. The membership vector is fixed in this test.
     #[test]
     fn test_decompose_at_bit_exhaustive_pivot() {
         let mv = MembershipVector::from_string(
             "a738f14dc0750b7f7e4c418fdda32c424e9ecf7280892d14648e405466a76f29",
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         for p in 0..model::IDENTIFIER_SIZE_BYTES * 8 - 1 {
             assert_valid_decompose(&mv, p, mv.decompose_at_bit(p));
         }
     }
-    
-    /// Test decomposing the prefix at a given pivot bit index. The membership vector is random in this test it tries 1000 random membership 
+
+    /// Test decomposing the prefix at a given pivot bit index. The membership vector is random in this test it tries 1000 random membership
     /// vectors, and for each membership vector it tests all combinations of pivots from 0 to 255.
     #[test]
     fn test_decompose_at_bit_exhaustive_pivot_random_mvs() {
         for _ in 0..1000 {
             let mv = random_membership_vector();
-            
+
             for p in 0..model::IDENTIFIER_SIZE_BYTES * 8 - 1 {
                 assert_valid_decompose(&mv, p, mv.decompose_at_bit(p));
             }
         }
     }
-    
-    fn assert_valid_decompose(mv : &MembershipVector, pivot_index : usize, (left, pivot, right) : (String, String, String)) {
-        let expected_left = hex::encode(&mv.to_bytes()[0..pivot_index/8]).to_string();
-        let expected_pivot =   format!("{:08b}", mv.to_bytes()[pivot_index/8]);
-        let expected_right = hex::encode(&mv.to_bytes()[pivot_index/8 + 1..]).to_string();
+
+    fn assert_valid_decompose(
+        mv: &MembershipVector,
+        pivot_index: usize,
+        (left, pivot, right): (String, String, String),
+    ) {
+        let expected_left = hex::encode(&mv.to_bytes()[0..pivot_index / 8]).to_string();
+        let expected_pivot = format!("{:08b}", mv.to_bytes()[pivot_index / 8]);
+        let expected_right = hex::encode(&mv.to_bytes()[pivot_index / 8 + 1..]).to_string();
 
         assert_eq!(left, expected_left, "p: {}", pivot_index);
         assert_eq!(pivot, expected_pivot, "p: {}", pivot_index);
