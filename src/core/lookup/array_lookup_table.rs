@@ -60,7 +60,7 @@ impl Debug for ArrayLookupTable {
         };
         writeln!(f, "ArrayLookupTable: {{")?;
         for (i, (l, r)) in inner.left.iter().zip(inner.right.iter()).enumerate() {
-            writeln!(f, "Level: {}, Left: {:?}, Right: {:?}", i, l, r)?;
+            writeln!(f, "Level: {i}, Left: {l:?}, Right: {r:?}")?;
         }
         write!(f, "}}")
     }
@@ -191,7 +191,7 @@ impl LookupTable for ArrayLookupTable {
         // iterates over the levels and compares the entries in the left and right directions
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(err) => panic!("Failed to acquire read lock on the lookup table: {}", err),
+            Err(err) => panic!("Failed to acquire read lock on the lookup table: {err}"),
         };
         for l in 0..model::IDENTIFIER_SIZE_BYTES {
             // Check if the left entry is equal
@@ -556,20 +556,17 @@ mod tests {
                                 (Some(ref read_val), Some(ref last_write)) => {
                                     assert_eq!(
                                         read_val, last_write,
-                                        "Thread {}: Read value {:?} does not match last write {:?}",
-                                        t_id, read_val, last_write
+                                        "Thread {t_id}: Read value {read_val:?} does not match last write {last_write:?}"
                                     );
                                 }
                                 (Some(ref read_val), None) => {
                                     panic!(
-                                        "Thread {}: Read value {:?} does not match last write None",
-                                        t_id, read_val
+                                        "Thread {t_id}: Read value {read_val:?} does not match last write None"
                                     );
                                 }
                                 _ => {
                                     panic!(
-                                        "Invalid state: read_val_opt: {:?}, last_write_opt: {:?}",
-                                        read_val_opt, last_write_opt
+                                        "Invalid state: read_val_opt: {read_val_opt:?}, last_write_opt: {last_write_opt:?}",
                                     );
                                 }
                             }

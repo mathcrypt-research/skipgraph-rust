@@ -79,10 +79,7 @@ pub fn random_identifier_greater_than(target: &Identifier) -> Identifier {
                 }
             }
             Identifier::from_bytes(&bytes).unwrap_or_else(|_| {
-                panic!(
-                    "Failed to create a valid identifier from bytes: {:?}",
-                    bytes
-                )
+                panic!("Failed to create a valid identifier from bytes: {bytes:?}")
             })
         }
     }
@@ -146,12 +143,9 @@ pub fn random_identifier_less_than(target: &Identifier) -> Identifier {
                     break;
                 }
             }
-            
+
             Identifier::from_bytes(&bytes).unwrap_or_else(|_| {
-                panic!(
-                    "Failed to create a valid identifier from bytes: {:?}",
-                    bytes
-                )
+                panic!("Failed to create a valid identifier from bytes: {bytes:?}")
             })
         }
     }
@@ -273,7 +267,7 @@ pub fn random_identities(n: usize) -> Vec<Identity> {
 /// - One entry for the identifier at index `i + n`, using `Direction::Right`.
 ///
 /// # Parameters
-/// - `n`: The number of unique indices to be added to the lookup table. This will result 
+/// - `n`: The number of unique indices to be added to the lookup table. This will result
 ///   in a total of `2 * n` entries being inserted.
 ///
 /// # Returns
@@ -408,7 +402,7 @@ where
         join_thread.join().expect("Failed to join thread");
         match join_res {
             Ok(_) => Ok(()),
-            Err(e) => Err(format!("Thread panicked: {:?}", e)),
+            Err(e) => Err(format!("Thread panicked: {e:?}")),
         }
     } else {
         Err("Thread timed out".to_string())

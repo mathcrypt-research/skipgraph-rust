@@ -50,7 +50,7 @@ impl MembershipVector {
     pub fn to_bit_string(&self) -> String {
         self.0
             .iter()
-            .map(|&b| format!("{:08b}", b))
+            .map(|&b| format!("{b:08b}"))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -142,7 +142,7 @@ impl Display for MembershipVector {
 impl Debug for MembershipVector {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // This ensures both {:?} and {:#?} produce the same output as Display.
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -433,8 +433,8 @@ mod test {
         let expected_pivot = format!("{:08b}", mv.to_bytes()[pivot_index / 8]);
         let expected_right = hex::encode(&mv.to_bytes()[pivot_index / 8 + 1..]).to_string();
 
-        assert_eq!(left, expected_left, "p: {}", pivot_index);
-        assert_eq!(pivot, expected_pivot, "p: {}", pivot_index);
-        assert_eq!(right, expected_right, "p: {}", pivot_index);
+        assert_eq!(left, expected_left, "p: {pivot_index}");
+        assert_eq!(pivot, expected_pivot, "p: {pivot_index}");
+        assert_eq!(right, expected_right, "p: {pivot_index}");
     }
 }

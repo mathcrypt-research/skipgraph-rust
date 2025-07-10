@@ -159,7 +159,7 @@ impl Display for Identifier {
 impl Debug for Identifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // This ensures both {:?} and {:#?} produce the same output as Display.
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(id_0, comp.left);
         assert_eq!(id_0, comp.right);
         assert_eq!(IDENTIFIER_SIZE_BYTES, comp.diff_index);
-        assert_eq!(comp.to_string(), format!("{} == {}", id_0, id_0));
+        assert_eq!(comp.to_string(), format!("{id_0} == {id_0}"));
 
         let comp = id_1.compare(&id_1);
         assert_eq!(id_1, id_1);
@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(id_1, comp.left);
         assert_eq!(id_1, comp.right);
         assert_eq!(IDENTIFIER_SIZE_BYTES, comp.diff_index);
-        assert_eq!(comp.to_string(), format!("{} == {}", id_1, id_1));
+        assert_eq!(comp.to_string(), format!("{id_1} == {id_1}"));
 
         let comp = id_2.compare(&id_2);
         assert_eq!(id_2, id_2);
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(id_2, comp.left);
         assert_eq!(id_2, comp.right);
         assert_eq!(IDENTIFIER_SIZE_BYTES, comp.diff_index);
-        assert_eq!(comp.to_string(), format!("{} == {}", id_2, id_2));
+        assert_eq!(comp.to_string(), format!("{id_2} == {id_2}"));
 
         // id_0 < id_1
         let comp = id_0.compare(&id_1);
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(IDENTIFIER_SIZE_BYTES, comp.diff_index);
         assert_eq!(
             comp.to_string(),
-            format!("{} == {}", id_random_greater, id_random_greater)
+            format!("{id_random_greater} == {id_random_greater}")
         );
 
         let comp = id_random_less.compare(&id_random_less);
