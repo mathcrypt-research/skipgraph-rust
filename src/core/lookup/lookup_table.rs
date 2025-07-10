@@ -5,7 +5,7 @@ use crate::core::model::identity::Identity;
 pub type LookupTableLevel = usize;
 
 /// LookupTable is the core view of Skip Graph node towards the network.
-pub trait LookupTable {
+pub trait LookupTable: Send + Sync {
     /// Update the entry at the given level and direction.
     fn update_entry(
         &self,
