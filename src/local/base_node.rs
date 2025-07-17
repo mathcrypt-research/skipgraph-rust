@@ -65,7 +65,8 @@ impl Node for LocalNode {
     ///
     /// # Notes
     /// - If no matching identifier is found at any level, the search defaults to returning
-    ///   the caller's own identifier at level `0`.
+    ///   the caller's own identifier at level `0`. This edge behavior is covered in
+    ///   `search_fallback_test.rs`.
     /// - The method aims to handle both leftward and rightward searches efficiently. To add support
     ///   for other directions or additional filtering, alterations may be required within the
     ///   filtering logic.
@@ -123,7 +124,10 @@ impl Node for LocalNode {
                 Ok(IdentifierSearchResult::new(*req.target(), level, id))
             }
             None => {
-                // If no candidates are found, return its own identifier
+                // No valid neighbors were found at any level. As specified in
+                // Aspnes & Shah's skip graph design, the search must fall back
+                // to the caller's own identifier at level 0. See
+                // `search_fallback_test.rs` for edge-case validation.
                 Ok(IdentifierSearchResult::new(
                     *req.target(),
                     0,
@@ -142,6 +146,15 @@ impl Node for LocalNode {
 
     fn join(&self, _introducer: Self::Address) -> anyhow::Result<()> {
         todo!()
+    }
+}
+
+impl LocalNode {
+    /// Create a new `LocalNode` with the provided identifier, membership vector
+    /// and lookup table.
+    #[cfg(test)]
+    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>) -> Self {
+        LocalNode { id, mem_vec, lt }
     }
 }
 
@@ -690,12 +703,14 @@ mod tests {
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Error while searching by id in level"),
-            "Error message '{error_msg}' doesn't contain expected text");
+            "Error message '{error_msg}' doesn't contain expected text"
+        );
 
         // Additionally, check that the error message contains the simulated lookup table error ("Simulated lookup table error")
         // This ensures that the error from the lookup table is propagated correctly
         assert!(
             error_msg.contains("Simulated lookup table error"),
-            "Error message '{error_msg}' doesn't contain expected text");
+            "Error message '{error_msg}' doesn't contain expected text"
+        );
     }
 }
