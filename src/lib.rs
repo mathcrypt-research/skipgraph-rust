@@ -1,17 +1,5 @@
 pub mod core;
 mod local;
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
+// TODO: for the time being, the network module is solely used in testing.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+mod network;

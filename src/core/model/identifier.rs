@@ -84,7 +84,7 @@ impl Display for ComparisonContext {
 }
 
 // Identifier represents a 32-byte unique identifier for a Skip Graph node.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identifier([u8; IDENTIFIER_SIZE_BYTES]);
 
 impl Identifier {
