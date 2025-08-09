@@ -1,8 +1,7 @@
 pub mod mock;
 
 use crate::core::Identifier;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 /// Payload enum defines the semantics of the message payload that can be sent over the network.
 #[derive(Debug)]
@@ -17,7 +16,7 @@ pub struct Message {
 }
 
 /// MessageProcessor trait defines the entity that processes the incoming network messages at this node.
-pub trait MessageProcessor {
+pub trait MessageProcessor: Send {
     fn process_incoming_message(&mut self, message: Message) -> anyhow::Result<()>;
 }
 
@@ -31,6 +30,6 @@ pub trait Network {
     /// Registering a new processor is illegal if there is already a processor registered, and causes an error.
     fn register_processor(
         &mut self,
-        processor: Box<Rc<RefCell<dyn MessageProcessor>>>,
+        processor: Box<Arc<Mutex<dyn MessageProcessor>>>,
     ) -> anyhow::Result<()>;
 }
