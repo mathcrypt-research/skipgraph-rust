@@ -24,10 +24,7 @@ impl MockNetwork {
     /// * `message`: The incoming message to be processed.
     ///   Returns:
     /// * `Result<(), anyhow::Error>`: Returns Ok if the message was processed successfully, or an error if processing failed.
-    pub fn incoming_message(
-        &self,
-        message: Message,
-    ) -> anyhow::Result<()> {
+    pub fn incoming_message(&self, message: Message) -> anyhow::Result<()> {
         if let Some(ref processor) = self.processor {
             processor
                 .lock()
