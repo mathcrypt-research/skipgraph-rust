@@ -1,10 +1,10 @@
+use crate::core::testutil::fixtures::random_identifier;
+use crate::network::mock::hub::NetworkHub;
 use crate::network::Payload::TestMessage;
 use crate::network::{Message, MessageProcessor, Network};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use crate::core::testutil::fixtures::random_identifier;
-use crate::network::mock::hub::NetworkHub;
 
 struct MockMessageProcessor {
     seen: HashSet<String>,
@@ -121,9 +121,8 @@ fn test_concurrent_message_sending() {
     let mock_net_2 = NetworkHub::new_mock_network(hub, id_2).unwrap();
 
     // Create 10 different message contents
-    let message_contents: Vec<String> = (0..10)
-        .map(|i| format!("Concurrent message {i}"))
-        .collect();
+    let message_contents: Vec<String> =
+        (0..10).map(|i| format!("Concurrent message {i}")).collect();
 
     // Set up a barrier to synchronize all threads
     let barrier = Arc::new(Barrier::new(10));
@@ -161,7 +160,10 @@ fn test_concurrent_message_sending() {
     // Verify that all messages were received
     let processor = msg_proc_1.lock().unwrap();
     for content in message_contents {
-        assert!(processor.has_seen(&content), "Message '{content}' was not received");
+        assert!(
+            processor.has_seen(&content),
+            "Message '{content}' was not received"
+        );
         println!("Message '{content}' was successfully processed");
     }
 }

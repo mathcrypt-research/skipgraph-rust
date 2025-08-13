@@ -1,6 +1,6 @@
 use crate::core::Identifier;
 use crate::network::mock::network::MockNetwork;
-use crate::network::{Message};
+use crate::network::Message;
 use anyhow::{anyhow, Context};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -20,8 +20,13 @@ impl NetworkHub {
     }
 
     /// Creates a new mock network with the given identifier and registers it in the hub.
-    pub fn new_mock_network(hub: Arc<Mutex<Self>>, identifier: Identifier) -> anyhow::Result<Arc<Mutex<MockNetwork>>> {
-        let inner_hub = hub.lock().map_err(|_| anyhow!("Failed to acquire lock on hub"))?;
+    pub fn new_mock_network(
+        hub: Arc<Mutex<Self>>,
+        identifier: Identifier,
+    ) -> anyhow::Result<Arc<Mutex<MockNetwork>>> {
+        let inner_hub = hub
+            .lock()
+            .map_err(|_| anyhow!("Failed to acquire lock on hub"))?;
         let mut inner_networks = inner_hub
             .networks
             .write()
