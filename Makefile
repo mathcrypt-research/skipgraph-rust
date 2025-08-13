@@ -22,3 +22,7 @@ install-tools: install-lint install-rustfmt
 test:
 	@echo "Running tests"
 	@cargo test
+.PHONY format:
+format:
+	@echo "Formatting code"
+	@cargo fmt --all -- --check
