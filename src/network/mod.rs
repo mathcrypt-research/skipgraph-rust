@@ -21,7 +21,7 @@ pub trait MessageProcessor: Send {
 }
 
 /// Network trait defines the interface for a network service that can send and receive messages.
-pub trait Network {
+pub trait Network: Send {
     /// Sends a message to the network.
     fn send_message(&self, message: Message) -> anyhow::Result<()>;
 
