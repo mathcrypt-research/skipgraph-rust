@@ -15,7 +15,6 @@ pub(crate) struct LocalNode {
 }
 
 impl Node for LocalNode {
-    type Address = Rc<LocalNode>;
 
     fn get_identifier(&self) -> &Identifier {
         &self.id
@@ -23,10 +22,6 @@ impl Node for LocalNode {
 
     fn get_membership_vector(&self) -> &MembershipVector {
         &self.mem_vec
-    }
-
-    fn get_address(&self) -> Self::Address {
-        Rc::new(self.clone())
     }
 
     /// Searches for an identifier in a level-based structure in a specific direction.
