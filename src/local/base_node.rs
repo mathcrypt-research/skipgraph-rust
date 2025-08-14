@@ -5,6 +5,7 @@ use crate::core::{
 };
 use std::fmt;
 use std::fmt::Formatter;
+use crate::network::Network;
 
 #[allow(dead_code)]
 /// LocalNode is a struct that represents a single node in the local implementation of the skip graph.
@@ -12,6 +13,7 @@ pub(crate) struct LocalNode {
     id: Identifier,
     mem_vec: MembershipVector,
     lt: Box<dyn LookupTable>,
+    net: Box<dyn Network>,
 }
 
 impl Node for LocalNode {
@@ -148,8 +150,8 @@ impl LocalNode {
     /// Create a new `LocalNode` with the provided identifier, membership vector
     /// and lookup table.
     #[cfg(test)]
-    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>) -> Self {
-        LocalNode { id, mem_vec, lt }
+    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>, net: Box<dyn Network>) -> Self {
+        LocalNode { id, mem_vec, lt, net }
     }
 }
 
@@ -178,6 +180,7 @@ impl Clone for LocalNode {
             id: self.id,
             mem_vec: self.mem_vec,
             lt: self.lt.clone(),
+            net: self.net.clone(),
         }
     }
 }
@@ -203,6 +206,7 @@ mod tests {
             id,
             mem_vec,
             lt: Box::new(ArrayLookupTable::new(&span_fixture())),
+            net: Box::new(new_noop_network()),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
