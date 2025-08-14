@@ -2,6 +2,7 @@ use super::base_node::LocalNode;
 use crate::core::model::direction::Direction;
 use crate::core::testutil::fixtures::{random_membership_vector, span_fixture};
 use crate::core::{ArrayLookupTable, Identifier, IdentifierSearchRequest, Node};
+use crate::network::mock::noop_network::new_noop_network;
 
 // TODO: move other tests from base_node.rs here
 /// Tests fallback behavior of `search_by_id` when no neighbors exist.
@@ -16,6 +17,7 @@ fn test_search_by_id_singleton_fallback() {
         id,
         mem_vec,
         Box::new(ArrayLookupTable::new(&span_fixture())),
+        new_noop_network(),
     );
 
     // Left and right searches for identifiers 5 and 15

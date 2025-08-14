@@ -198,6 +198,7 @@ mod tests {
     use crate::core::{ArrayLookupTable, LookupTableLevel, LOOKUP_TABLE_LEVELS};
     use rand::Rng;
     use std::sync::Arc;
+    use crate::network::mock::noop_network::new_noop_network;
 
     #[test]
     fn test_local_node() {
@@ -207,7 +208,7 @@ mod tests {
             id,
             mem_vec,
             lt: Box::new(ArrayLookupTable::new(&span_fixture())),
-            net: Box::new(new_noop_network()),
+            net: new_noop_network(),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
@@ -241,6 +242,7 @@ mod tests {
                 id: random_identifier(),
                 mem_vec: random_membership_vector(),
                 lt: Box::new(lt.clone()),
+                net: new_noop_network(),
             };
 
             let direction = Direction::Left;
@@ -291,6 +293,7 @@ mod tests {
                 id: random_identifier(),
                 mem_vec: random_membership_vector(),
                 lt: Box::new(lt.clone()),
+                net: new_noop_network(),
             };
 
             let actual_result = node.search_by_id(&req).unwrap();
@@ -356,6 +359,7 @@ mod tests {
                 id: random_identifier(),
                 mem_vec: random_membership_vector(),
                 lt: Box::new(lt.clone()),
+                net: new_noop_network(),
             };
 
             let direction = Direction::Left;
@@ -416,6 +420,7 @@ mod tests {
                 id: random_identifier(),
                 mem_vec: random_membership_vector(),
                 lt: Box::new(lt.clone()),
+                net: new_noop_network(),
             };
 
             let direction = Direction::Right;
@@ -449,6 +454,7 @@ mod tests {
             id: random_identifier(),
             mem_vec: random_membership_vector(),
             lt: Box::new(lt.clone()),
+            net: new_noop_network(),
         };
 
         // This test should ensure that when the exact target is found, it returns the correct level and identifier.
@@ -494,6 +500,7 @@ mod tests {
             id: random_identifier(),
             mem_vec: random_membership_vector(),
             lt: Box::new(lt.clone()),
+            net: new_noop_network(),
         });
 
         // Ensure the target is not the same as the node's identifier
@@ -575,6 +582,7 @@ mod tests {
             id: random_identifier(),
             mem_vec: random_membership_vector(),
             lt: Box::new(lt.clone()),
+            net: new_noop_network(),
         });
 
         // Ensure the target is not the same as the node's identifier
@@ -683,6 +691,7 @@ mod tests {
             id: random_identifier(),
             mem_vec: random_membership_vector(),
             lt: Box::new(MockErrorLookupTable),
+            net: new_noop_network(),
         };
 
         // Create a random search request (any search request will return an error as
