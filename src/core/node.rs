@@ -21,5 +21,5 @@ pub trait Node {
     /// Performs the join protocol hence joining the current node to the Skip Graph overlay network.
     /// The node will use the given introducer node to join the network.
     /// Join returns a error if the current node has already joined the network.
-    fn join(&self, introducer: Self::Address) -> anyhow::Result<()>;
+    fn join(&self, introducer: Identifier) -> anyhow::Result<()>;
 }

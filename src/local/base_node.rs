@@ -139,7 +139,7 @@ impl Node for LocalNode {
         todo!()
     }
 
-    fn join(&self, _introducer: Self::Address) -> anyhow::Result<()> {
+    fn join(&self, _introducer: Identifier) -> anyhow::Result<()> {
         todo!()
     }
 }
