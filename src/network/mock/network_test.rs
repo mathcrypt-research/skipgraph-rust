@@ -1,11 +1,11 @@
+use crate::network::{Message, MessageProcessor, Network, Payload};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, Barrier};
+use std::thread;
 use crate::core::testutil::fixtures::random_identifier;
 use crate::network::mock::hub::NetworkHub;
-use crate::network::Payload::TestMessage;
-use crate::network::{Message, MessageProcessor, Network};
-use std::collections::HashSet;
-use std::sync::{Arc, Barrier, Mutex};
-use std::thread;
 
+#[derive(Debug)]
 struct MockMessageProcessor {
     seen: HashSet<String>,
 }
@@ -25,7 +25,7 @@ impl MockMessageProcessor {
 impl MessageProcessor for MockMessageProcessor {
     fn process_incoming_message(&mut self, message: Message) -> anyhow::Result<()> {
         match message.payload {
-            TestMessage(content) => {
+            Payload::TestMessage(content) => {
                 self.seen.insert(content);
                 Ok(())
             }
@@ -41,7 +41,7 @@ fn test_mock_message_processor() {
     let mock_network = NetworkHub::new_mock_network(hub.clone(), identifier).unwrap();
     let processor = MockMessageProcessor::new();
     let message = Message {
-        payload: TestMessage("Hello, World!".to_string()),
+        payload: Payload::TestMessage("Hello, World!".to_string()),
         target_node_id: identifier,
     };
 
@@ -84,7 +84,7 @@ fn test_hub_route_message() {
     let mock_net_2 = NetworkHub::new_mock_network(hub, id_2).unwrap();
 
     let message = Message {
-        payload: TestMessage("Test message".to_string()),
+        payload: Payload::TestMessage("Test message".to_string()),
         target_node_id: id_1,
     };
 
@@ -121,8 +121,9 @@ fn test_concurrent_message_sending() {
     let mock_net_2 = NetworkHub::new_mock_network(hub, id_2).unwrap();
 
     // Create 10 different message contents
-    let message_contents: Vec<String> =
-        (0..10).map(|i| format!("Concurrent message {i}")).collect();
+    let message_contents: Vec<String> = (0..10)
+        .map(|i| format!("Concurrent message {i}"))
+        .collect();
 
     // Set up a barrier to synchronize all threads
     let barrier = Arc::new(Barrier::new(10));
@@ -137,7 +138,7 @@ fn test_concurrent_message_sending() {
 
         let handle = thread::spawn(move || {
             let message = Message {
-                payload: TestMessage(content),
+                payload: Payload::TestMessage(content),
                 target_node_id: id_1_copy,
             };
 
@@ -160,10 +161,7 @@ fn test_concurrent_message_sending() {
     // Verify that all messages were received
     let processor = msg_proc_1.lock().unwrap();
     for content in message_contents {
-        assert!(
-            processor.has_seen(&content),
-            "Message '{content}' was not received"
-        );
+        assert!(processor.has_seen(&content), "Message '{content}' was not received");
         println!("Message '{content}' was successfully processed");
     }
 }
