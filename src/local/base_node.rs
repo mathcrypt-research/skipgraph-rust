@@ -5,6 +5,7 @@ use crate::core::{
 };
 use std::fmt;
 use std::fmt::Formatter;
+use std::sync::{Arc, Mutex};
 use crate::network::Network;
 
 #[allow(dead_code)]
@@ -13,7 +14,7 @@ pub(crate) struct LocalNode {
     id: Identifier,
     mem_vec: MembershipVector,
     lt: Box<dyn LookupTable>,
-    net: Box<dyn Network>,
+    net: Arc<Mutex<dyn Network>>,
 }
 
 impl Node for LocalNode {
@@ -150,7 +151,7 @@ impl LocalNode {
     /// Create a new `LocalNode` with the provided identifier, membership vector
     /// and lookup table.
     #[cfg(test)]
-    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>, net: Box<dyn Network>) -> Self {
+    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>, net: Arc<Mutex<dyn Network>>) -> Self {
         LocalNode { id, mem_vec, lt, net }
     }
 }
