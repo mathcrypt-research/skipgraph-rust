@@ -5,8 +5,8 @@ use crate::core::{
 };
 use std::fmt;
 use std::fmt::Formatter;
-use std::rc::Rc;
 
+#[allow(dead_code)]
 /// LocalNode is a struct that represents a single node in the local implementation of the skip graph.
 pub(crate) struct LocalNode {
     id: Identifier,
