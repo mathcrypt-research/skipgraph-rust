@@ -25,16 +25,14 @@ impl MockNetwork {
     ///   Returns:
     /// * `Result<(), anyhow::Error>`: Returns Ok if the message was processed successfully, or an error if processing failed.
     pub fn incoming_message(&self, message: Message) -> anyhow::Result<()> {
-        if let Some(ref processor) = self.processor {
-            processor
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Failed to acquire lock on message processor"))?
-                .process_incoming_message(message)
-                .context("Failed to process incoming message")?;
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("No message processor registered"))
-        }
+        let processor = self.processor.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No message processor registered"))?;
+        
+        processor
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Failed to acquire lock on message processor"))?
+            .process_incoming_message(message)
+            .context("Failed to process incoming message")
     }
 }
 
@@ -45,8 +43,7 @@ impl Network for MockNetwork {
             .lock()
             .map_err(|_| anyhow::anyhow!("Failed to acquire lock on network hub"))?
             .route_message(message)
-            .context("Failed to route message")?;
-        Ok(())
+            .context("Failed to route message")
     }
 
     /// Registers a message processor to handle incoming messages.
@@ -56,10 +53,12 @@ impl Network for MockNetwork {
         &mut self,
         processor: Box<Arc<Mutex<dyn MessageProcessor>>>,
     ) -> anyhow::Result<()> {
-        if self.processor.is_some() {
-            return Err(anyhow::anyhow!("A message processor is already registered"));
+        match self.processor {
+            Some(_) => Err(anyhow::anyhow!("A message processor is already registered")),
+            None => {
+                self.processor = Some(processor);
+                Ok(())
+            }
         }
-        self.processor = Some(processor);
-        Ok(())
     }
 }

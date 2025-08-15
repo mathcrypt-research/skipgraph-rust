@@ -12,7 +12,7 @@ use crate::core::Identifier;
 ///
 /// This struct derives the `Debug` trait, enabling it to be formatted using the `{:?}` formatter
 /// for debugging purposes.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct IdentifierSearchResult {
     target: Identifier,
     termination_level: LookupTableLevel,

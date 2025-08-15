@@ -46,21 +46,21 @@ fn test_mock_message_processor() {
     };
 
     {
-        let proc_guard = processor.lock().unwrap();
+        let proc_guard = processor.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(!proc_guard.has_seen("Hello, World!"));
     }
     {
-        let mut network_guard = mock_network.lock().unwrap();
+        let mut network_guard = mock_network.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(network_guard
             .register_processor(Box::new(processor.clone()))
             .is_ok());
     }
     {
-        let hub_guard = hub.lock().unwrap();
+        let hub_guard = hub.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(hub_guard.route_message(message).is_ok());
     }
     {
-        let proc_guard = processor.lock().unwrap();
+        let proc_guard = processor.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(proc_guard.has_seen("Hello, World!"));
     }
 }
@@ -74,7 +74,7 @@ fn test_hub_route_message() {
     let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1).unwrap();
     let msg_proc_1 = MockMessageProcessor::new();
     {
-        let mut net_guard = mock_net_1.lock().unwrap();
+        let mut net_guard = mock_net_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         net_guard
             .register_processor(Box::new(msg_proc_1.clone()))
             .expect("Failed to register message processor");
@@ -89,15 +89,15 @@ fn test_hub_route_message() {
     };
 
     {
-        let proc_guard = msg_proc_1.lock().unwrap();
+        let proc_guard = msg_proc_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(!proc_guard.has_seen("Test message"));
     }
     {
-        let net_guard = mock_net_2.lock().unwrap();
+        let net_guard = mock_net_2.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(net_guard.send_message(message).is_ok());
     }
     {
-        let proc_guard = msg_proc_1.lock().unwrap();
+        let proc_guard = msg_proc_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(proc_guard.has_seen("Test message"));
     }
 }
@@ -111,7 +111,7 @@ fn test_concurrent_message_sending() {
     let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1).unwrap();
     let msg_proc_1 = MockMessageProcessor::new();
     {
-        let mut net_guard = mock_net_1.lock().unwrap();
+        let mut net_guard = mock_net_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         net_guard
             .register_processor(Box::new(msg_proc_1.clone()))
             .expect("Failed to register message processor");
@@ -145,7 +145,7 @@ fn test_concurrent_message_sending() {
             barrier_clone.wait();
 
             // Send the message
-            let net_guard = mock_net_2_clone.lock().unwrap();
+            let net_guard = mock_net_2_clone.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             net_guard.send_message(message).unwrap();
         });
 
@@ -158,7 +158,7 @@ fn test_concurrent_message_sending() {
     }
 
     // Verify that all messages were received
-    let processor = msg_proc_1.lock().unwrap();
+    let processor = msg_proc_1.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     for content in message_contents {
         assert!(
             processor.has_seen(&content),

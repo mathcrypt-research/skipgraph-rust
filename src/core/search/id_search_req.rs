@@ -2,6 +2,7 @@ use crate::core::lookup::lookup_table::LookupTableLevel;
 use crate::core::model::direction::Direction;
 use crate::core::Identifier;
 
+#[derive(Debug, Clone, Copy)]
 pub struct IdentifierSearchRequest {
     pub target: Identifier,
     pub level: LookupTableLevel,
