@@ -76,25 +76,21 @@ impl Node for LocalNode {
         req: &IdentifierSearchRequest,
     ) -> anyhow::Result<IdentifierSearchResult> {
         // Collect neighbors from levels <= req.level in req.direction
-        let mut candidates = Vec::new();
-        for lvl in 0..=req.level() {
-            match self.lt.get_entry(lvl, req.direction()) {
-                Ok(Some(identity)) => {
-                    candidates.push((*identity.id(), lvl));
-                }
-                Ok(None) => {
-                    // No entry found at this level, continue to the next level
-                    continue;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
+        let candidates: Result<Vec<_>, _> = (0..=req.level())
+            .filter_map(|lvl| {
+                match self.lt.get_entry(lvl, req.direction()) {
+                    Ok(Some(identity)) => Some(Ok((*identity.id(), lvl))),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(anyhow::anyhow!(
                         "Error while searching by id in level {}: {}",
                         lvl,
                         e
-                    ));
+                    ))),
                 }
-            }
-        }
+            })
+            .collect();
+
+        let candidates = candidates?;
 
         // Filter candidates based on the direction
         let result = match req.direction() {

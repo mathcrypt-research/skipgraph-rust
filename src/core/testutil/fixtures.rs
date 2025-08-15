@@ -167,9 +167,7 @@ pub fn random_identifier_less_than(target: &Identifier) -> Identifier {
 /// The `Identifier` type and the `random_identifier` function must be properly
 /// defined in the scope where this function is used.
 pub fn random_sorted_identifiers(n: usize) -> Vec<Identifier> {
-    let mut ids = (0..n)
-        .map(|_| random_identifier())
-        .collect::<Vec<Identifier>>();
+    let mut ids: Vec<Identifier> = (0..n).map(|_| random_identifier()).collect();
     ids.sort();
     ids
 }
