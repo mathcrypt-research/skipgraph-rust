@@ -5,8 +5,9 @@ use crate::core::{
 };
 use std::fmt;
 use std::fmt::Formatter;
-use std::rc::Rc;
 
+// TODO: Remove #[allow(dead_code)] once LocalNode is used in production code. See issue #123 for tracking.
+#[allow(dead_code)]
 /// LocalNode is a struct that represents a single node in the local implementation of the skip graph.
 pub(crate) struct LocalNode {
     id: Identifier,
@@ -15,7 +16,6 @@ pub(crate) struct LocalNode {
 }
 
 impl Node for LocalNode {
-    type Address = Rc<LocalNode>;
 
     fn get_identifier(&self) -> &Identifier {
         &self.id
@@ -23,10 +23,6 @@ impl Node for LocalNode {
 
     fn get_membership_vector(&self) -> &MembershipVector {
         &self.mem_vec
-    }
-
-    fn get_address(&self) -> Self::Address {
-        Rc::new(self.clone())
     }
 
     /// Searches for an identifier in a level-based structure in a specific direction.
@@ -144,7 +140,7 @@ impl Node for LocalNode {
         todo!()
     }
 
-    fn join(&self, _introducer: Self::Address) -> anyhow::Result<()> {
+    fn join(&self, _introducer: Identifier) -> anyhow::Result<()> {
         todo!()
     }
 }
