@@ -4,7 +4,7 @@ use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use anyhow::anyhow;
 use std::fmt::{Debug, Formatter};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use tracing::{Level, Span};
 
 /// The number of levels in the lookup table is determined by the size of the identifier in bits (that is
@@ -12,9 +12,9 @@ use tracing::{Level, Span};
 pub const LOOKUP_TABLE_LEVELS: usize = model::IDENTIFIER_SIZE_BYTES * 8;
 
 /// It is a 2D array of Identity, where the first dimension is the level and the second dimension is the direction.
-/// Caution: lookup table by itself is not thread-safe, should be used with an Arc<Mutex<LookupTable>>.
+/// Uses Arc for shallow cloning - cloned instances share the same underlying data.
 pub struct ArrayLookupTable {
-    inner: RwLock<InnerArrayLookupTable>,
+    inner: Arc<RwLock<InnerArrayLookupTable>>,
     span: Span,
 }
 
@@ -29,10 +29,10 @@ impl ArrayLookupTable {
         let span = tracing::span!(parent: parent_span, Level::INFO, "array_lookup_table");
 
         ArrayLookupTable {
-            inner: RwLock::new(InnerArrayLookupTable {
+            inner: Arc::new(RwLock::new(InnerArrayLookupTable {
                 left: vec![None; LOOKUP_TABLE_LEVELS],
                 right: vec![None; LOOKUP_TABLE_LEVELS],
-            }),
+            })),
             span,
         }
     }
@@ -40,20 +40,9 @@ impl ArrayLookupTable {
 
 impl Clone for ArrayLookupTable {
     fn clone(&self) -> Self {
-        // Create a new instance of ArrayLookupTable with the same data
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                // If the lock is poisoned, recover the data to prevent cascade failure
-                // This is safe because we're only reading and cloning
-                poisoned.into_inner()
-            }
-        };
+        // Shallow clone: cloned instances share the same underlying data via Arc
         ArrayLookupTable {
-            inner: RwLock::new(InnerArrayLookupTable {
-                left: inner.left.clone(),
-                right: inner.right.clone(),
-            }),
+            inner: Arc::clone(&self.inner),
             span: self.span.clone(),
         }
     }
@@ -196,15 +185,12 @@ impl LookupTable for ArrayLookupTable {
     /// Returns true if the entries are equal, false otherwise.
     fn equal(&self, other: &dyn LookupTable) -> bool {
         // iterates over the levels and compares the entries in the left and right directions
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                // If the lock is poisoned, recover the data to prevent cascade failure
-                // This is safe because we're only reading for comparison
-                poisoned.into_inner()
-            }
-        };
-        for l in 0..model::IDENTIFIER_SIZE_BYTES {
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            // If the lock is poisoned, recover the data to prevent cascade failure
+            // This is safe because we're only reading for comparison
+            poisoned.into_inner()
+        });
+        for l in 0..LOOKUP_TABLE_LEVELS {
             // Check if the left entry is equal
             if let Ok(other_entry) = other.get_entry(l, Direction::Left) {
                 if inner.left[l].as_ref() != other_entry.as_ref() {
@@ -634,5 +620,79 @@ mod tests {
                 Some(identity.clone())
             );
         }
+    }
+
+    /// Tests that cloning ArrayLookupTable creates a shallow copy.
+    /// Changes made to one instance should be visible in the cloned instance.
+    #[test]
+    fn test_shallow_clone() {
+        let lt1 = ArrayLookupTable::new(&span_fixture());
+        let id1 = random_identity();
+
+        // Clone the lookup table
+        let lt2 = lt1.clone();
+        
+        // Update the original lookup table
+        lt1.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        
+        // Verify the cloned lookup table sees the same data
+        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1.clone()));
+        
+        // Update through the cloned lookup table
+        let id2 = random_identity();
+        lt2.update_entry(id2.clone(), 1, Direction::Right).unwrap();
+        
+        // Verify the original lookup table sees the change made through the clone
+        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2.clone()));
+        
+        // Both instances should be equal since they share the same underlying data
+        assert_eq!(lt1, lt2);
+        
+        // Verify multiple clones all share the same data
+        let lt3 = lt2.clone();
+        let id3 = random_identity();
+        lt3.update_entry(id3.clone(), 2, Direction::Left).unwrap();
+        
+        // All instances should see the new change
+        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+    }
+
+    /// Tests that cloning via trait objects (Box<dyn LookupTable>) also creates shallow copies.
+    /// This ensures the clone_box method provides the same shallow cloning behavior.
+    #[test]
+    fn test_trait_object_shallow_clone() {
+        let lt1: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new(&span_fixture()));
+        let id1 = random_identity();
+
+        // Clone via trait object
+        let lt2 = lt1.clone();
+        
+        // Update the original lookup table
+        lt1.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        
+        // Verify the cloned lookup table sees the same data
+        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1.clone()));
+        
+        // Update through the cloned lookup table
+        let id2 = random_identity();
+        lt2.update_entry(id2.clone(), 1, Direction::Right).unwrap();
+        
+        // Verify the original lookup table sees the change made through the clone
+        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2.clone()));
+        
+        // Both trait objects should be equal since they share the same underlying data
+        assert!(lt1.equal(&*lt2));
+        
+        // Test multiple levels of cloning
+        let lt3 = lt2.clone();
+        let id3 = random_identity();
+        lt3.update_entry(id3.clone(), 2, Direction::Left).unwrap();
+        
+        // All instances should see the new change
+        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
     }
 }
