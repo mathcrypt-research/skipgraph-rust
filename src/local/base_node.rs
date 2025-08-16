@@ -666,7 +666,7 @@ mod tests {
             }
 
             fn clone_box(&self) -> Box<dyn LookupTable> {
-                todo!()
+                Box::new(self.clone())
             }
         }
 

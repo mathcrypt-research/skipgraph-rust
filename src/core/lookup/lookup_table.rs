@@ -35,6 +35,12 @@ pub trait LookupTable: Send + Sync {
     /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
     fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
 
+    /// Creates a shallow copy of this lookup table.
+    /// 
+    /// Implementations should ensure that cloned instances share the same underlying data
+    /// (e.g., using Arc for shared ownership). Changes made through one instance should be
+    /// visible in all cloned instances. This is the standard cloning behavior for all
+    /// LookupTable implementations.
     fn clone_box(&self) -> Box<dyn LookupTable>;
 }
 
