@@ -6,3 +6,4 @@ pub(crate) mod direction;
 pub mod identifier;
 pub mod identity;
 pub mod memvec;
+pub(crate) mod search;
