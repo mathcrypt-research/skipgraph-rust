@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use crate::core::model::direction::Direction;
 use crate::core::{
     Identifier, IdentifierSearchRequest, IdentifierSearchResult, LookupTable, MembershipVector,
@@ -79,7 +80,7 @@ impl Node for BaseNode {
             .filter_map(|lvl| match self.lt.get_entry(lvl, req.direction()) {
                 Ok(Some(identity)) => Some(Ok((*identity.id(), lvl))),
                 Ok(None) => None,
-                Err(e) => Some(Err(anyhow::anyhow!(
+                Err(e) => Some(Err(anyhow!(
                     "Error while searching by id in level {}: {}",
                     lvl,
                     e
