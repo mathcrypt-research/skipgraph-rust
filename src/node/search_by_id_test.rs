@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use std::sync::Arc;
 use rand::Rng;
 use super::base_node::BaseNode;
@@ -455,7 +456,7 @@ fn test_search_by_id_error_propagation() {
         }
 
         fn get_entry(&self, _: usize, _: Direction) -> anyhow::Result<Option<Identity>> {
-            Err(anyhow::anyhow!("Simulated lookup table error"))
+            Err(anyhow!("Simulated lookup table error"))
         }
 
         fn equal(&self, _: &dyn LookupTable) -> bool {
