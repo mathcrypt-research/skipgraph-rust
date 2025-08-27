@@ -26,6 +26,7 @@ pub trait MessageProcessorCore: Send + Sync {
 }
 
 /// Network trait defines the interface for a network service that can send and receive messages.
+#[unimock::unimock(api=NetworkMock)]
 pub trait Network: Send + Sync {
     /// Sends a message to the network.
     fn send_message(&self, message: Message) -> anyhow::Result<()>;
@@ -33,7 +34,7 @@ pub trait Network: Send + Sync {
     /// Registers a message processor to handle incoming messages.
     /// At any point in time, there can be only one processor registered.
     /// Registering a new processor is illegal if there is already a processor registered, and causes an error.
-    fn register_processor(&self, processor: processor::MessageProcessor) -> anyhow::Result<()>;
+    fn register_processor(&self, processor: MessageProcessor) -> anyhow::Result<()>;
 
     /// Creates a shallow copy of this networking layer instance.
     ///

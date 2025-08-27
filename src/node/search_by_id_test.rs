@@ -10,11 +10,13 @@ use crate::core::{
     ArrayLookupTable, Identifier, IdentifierSearchRequest, LookupTable, LookupTableLevel,
     LOOKUP_TABLE_LEVELS,
 };
-use crate::network::mock::noop_network::NoopNetwork;
+
 use crate::node::Node;
 use anyhow::anyhow;
 use rand::Rng;
 use std::sync::Arc;
+use crate::network::NetworkMock;
+use unimock::*;
 
 // TODO: move other tests from base_node.rs here
 /// Tests fallback behavior of `search_by_id` when no neighbors exist.
@@ -25,11 +27,15 @@ fn test_search_by_id_singleton_fallback() {
     // Node with identifier 10 and empty lookup table
     let id = Identifier::from_bytes(&[10u8]).unwrap();
     let mem_vec = random_membership_vector();
+    let mock_net = Unimock::new((
+        NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+        NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+    ));
     let node = BaseNode::new(
         id,
         mem_vec,
         Box::new(ArrayLookupTable::new(&span_fixture())),
-        Box::new(NoopNetwork::new()),
+        Box::new(mock_net),
     ).expect("Failed to create BaseNode");
 
     // Left and right searches for identifiers 5 and 15
@@ -72,11 +78,16 @@ fn test_search_by_id_found_left_direction() {
         )
         .expect("Failed to update entry in lookup table");
 
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+            NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+        ));
+
         let node = BaseNode::new(
             random_identifier(),
             random_membership_vector(),
             Box::new(lt.clone()),
-            Box::new(NoopNetwork::new()),
+            Box::new(mock_net),
         ).expect("Failed to create BaseNode");
 
         let direction = Direction::Left;
@@ -123,11 +134,16 @@ fn test_search_by_id_found_right_direction() {
         let direction = Direction::Right;
         let req = IdentifierSearchRequest::new(target, lvl, direction);
 
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+            NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+        ));
+        
         let node = BaseNode::new(
             random_identifier(),
             random_membership_vector(),
             Box::new(lt.clone()),
-            Box::new(NoopNetwork::new()),
+            Box::new(mock_net),
         ).expect("Failed to create BaseNode");
 
         let actual_result = node.search_by_id(&req).unwrap();
@@ -189,11 +205,16 @@ fn test_search_by_id_not_found_left_direction() {
             .expect("Failed to update entry in lookup table");
         }
 
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+            NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+        ));
+        
         let node = BaseNode::new(
             random_identifier(),
             random_membership_vector(),
             Box::new(lt.clone()),
-            Box::new(NoopNetwork::new()),
+            Box::new(mock_net),
         ).expect("Failed to create BaseNode");
 
         let direction = Direction::Left;
@@ -250,11 +271,16 @@ fn test_search_by_id_not_found_right_direction() {
             .expect("Failed to update entry in lookup table");
         }
 
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+            NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+        ));
+        
         let node = BaseNode::new(
             random_identifier(),
             random_membership_vector(),
             Box::new(lt.clone()),
-            Box::new(NoopNetwork::new()),
+            Box::new(mock_net),
         ).expect("Failed to create BaseNode");
 
         let direction = Direction::Right;
@@ -284,11 +310,16 @@ fn test_search_by_id_not_found_right_direction() {
 fn test_search_by_id_exact_result() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
 
+    let mock_net = Unimock::new((
+        NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+        NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+    ));
+    
     let node = BaseNode::new(
         random_identifier(),
         random_membership_vector(),
         Box::new(lt.clone()),
-        Box::new(NoopNetwork::new()),
+        Box::new(mock_net),
     ).expect("Failed to create BaseNode");
 
     // This test should ensure that when the exact target is found, it returns the correct level and identifier.
@@ -330,11 +361,17 @@ fn test_search_by_id_concurrent_found_left_direction() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
     let target = random_identifier();
 
+    // Set up a mock network with shallow cloning and processor registration to simulate concurrent network interactions.
+    let mock_net = Unimock::new((
+        NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+        NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+    ));
+    
     let node = BaseNode::new(
         random_identifier(),
         random_membership_vector(),
         Box::new(lt.clone()),
-        Box::new(NoopNetwork::new()),
+        Box::new(mock_net),
     ).expect("Failed to create BaseNode");
 
     // Ensure the target is not the same as the node's identifier
@@ -412,11 +449,16 @@ fn test_search_by_id_concurrent_right_direction() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
     let target = random_identifier();
 
+    let mock_net = Unimock::new((
+        NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+        NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+    ));
+    
     let node = BaseNode::new(
         random_identifier(),
         random_membership_vector(),
         Box::new(lt.clone()),
-        Box::new(NoopNetwork::new()),
+        Box::new(mock_net),
     ).expect("Failed to create BaseNode");
 
     // Ensure the target is not the same as the node's identifier
@@ -520,12 +562,17 @@ fn test_search_by_id_error_propagation() {
         }
     }
 
+    let mock_net = Unimock::new((
+        NetworkMock::register_processor.each_call(matching!(_)).answers(&|_, _| Ok(())),
+        NetworkMock::clone_box.each_call(matching!()).answers(&|mock| Box::new(mock.clone())),
+    ));
+
     // Create a base node with the mock error lookup table
     let node = BaseNode::new(
         random_identifier(),
         random_membership_vector(),
         Box::new(MockErrorLookupTable),
-        Box::new(NoopNetwork::new()),
+        Box::new(mock_net),
     ).expect("Failed to create BaseNode");
 
     // Create a random search request (any search request will return an error as

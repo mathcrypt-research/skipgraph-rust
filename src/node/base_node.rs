@@ -1,14 +1,14 @@
-use anyhow::anyhow;
 use crate::core::model::direction::Direction;
 use crate::core::{
     Identifier, IdentifierSearchRequest, IdentifierSearchResult, LookupTable, MembershipVector,
 };
-use crate::node::Node;
-use std::fmt;
-use std::fmt::Formatter;
-use crate::network::{Message, MessageProcessorCore, Network};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
+use crate::network::{Message, MessageProcessorCore, Network};
+use crate::node::Node;
+use anyhow::anyhow;
+use std::fmt;
+use std::fmt::Formatter;
 
 // TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
 #[allow(dead_code)]
@@ -155,12 +155,24 @@ impl BaseNode {
     /// Create a new `BaseNode` with the provided identifier, membership vector
     /// and lookup table.
     #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
-    pub(crate) fn new(id: Identifier, mem_vec: MembershipVector, lt: Box<dyn LookupTable>, net: Box<dyn Network>) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        id: Identifier,
+        mem_vec: MembershipVector,
+        lt: Box<dyn LookupTable>,
+        net: Box<dyn Network>,
+    ) -> anyhow::Result<Self> {
         let clone_net = net.clone();
-        let node = BaseNode { id, mem_vec, lt, net};
+        let node = BaseNode {
+            id,
+            mem_vec,
+            lt,
+            net,
+        };
         // Create a MessageProcessor from this node, instead of casting directly
         let processor = MessageProcessor::new(Box::new(node.clone()));
-        clone_net.register_processor(processor).map_err(|e| anyhow!("could not register node in network: {}", e))?;
+        clone_net
+            .register_processor(processor)
+            .map_err(|e| anyhow!("could not register node in network: {}", e))?;
         Ok(node)
     }
 }
@@ -199,12 +211,10 @@ impl Clone for BaseNode {
 mod tests {
     use super::*;
     use crate::core::testutil::fixtures::{
-        random_identifier
-        , random_membership_vector,
-        span_fixture,
+        random_identifier, random_membership_vector, span_fixture,
     };
     use crate::core::ArrayLookupTable;
-    use crate::network::mock::noop_network::NoopNetwork;
+    use unimock::*;
 
     #[test]
     fn test_base_node() {
@@ -214,7 +224,7 @@ mod tests {
             id,
             mem_vec,
             lt: Box::new(ArrayLookupTable::new(&span_fixture())),
-            net: Box::new(NoopNetwork::new()),
+            net: Box::new(Unimock::new(())), // No expectations needed for direct struct construction
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
