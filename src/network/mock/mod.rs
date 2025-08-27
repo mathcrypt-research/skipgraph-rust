@@ -4,5 +4,3 @@ mod hub;
 mod network;
 #[cfg(test)]
 mod network_test;
-#[cfg(test)]
-pub mod noop_network;
