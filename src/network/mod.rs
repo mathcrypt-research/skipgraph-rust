@@ -2,6 +2,7 @@ pub mod mock;
 mod processor;
 
 use crate::core::Identifier;
+#[allow(unused)]
 pub use processor::MessageProcessor;
 
 /// Payload enum defines the semantics of the message payload that can be sent over the network.
@@ -40,6 +41,11 @@ pub trait Network: Send + Sync {
     /// (e.g., using Arc for shared ownership). Changes made through one instance should be
     /// visible in all cloned instances. This is the standard cloning behavior for all
     /// Network implementations.
-    #[allow(dead_code)]
     fn clone_box(&self) -> Box<dyn Network>;
+}
+
+impl Clone for Box<dyn Network> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
