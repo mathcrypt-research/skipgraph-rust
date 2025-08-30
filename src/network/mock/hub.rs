@@ -1,13 +1,13 @@
 use crate::core::Identifier;
 use crate::network::mock::network::MockNetwork;
-use crate::network::Message;
+use crate::network::{Event};
 use anyhow::{anyhow, Context};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// NetworkHub is a central hub that manages multiple mock networks.
-/// It allows for the creation of new mock networks and routing messages between them.
-/// Messages are routed completely through the hub in an in-memory fashion, simulating a network environment without actual network communication.
+/// It allows for the creation of new mock networks and routing events between them.
+/// Events are routed completely through the hub in an in-memory fashion, simulating a network environment without actual network communication.
 ///
 /// Thread-safety is handled internally using RwLock for the networks map, following a Go-like approach
 /// where the struct can be safely shared via Arc<NetworkHub> without external locking.
@@ -29,36 +29,36 @@ impl NetworkHub {
         let mut networks = hub
             .networks
             .write()
-            .map_err(|_| anyhow!("Failed to acquire write lock on network hub"))?;
+            .map_err(|_| anyhow!("failed to acquire write lock on network hub"))?;
 
         if networks.contains_key(&identifier) {
             return Err(anyhow!(
-                "Network with identifier {} already exists",
+                "network with identifier {} already exists",
                 identifier
             ));
         }
 
-        let mock_network = Arc::new(MockNetwork::new(hub.clone()));
+        let mock_network = Arc::new(MockNetwork::new(identifier, hub.clone()));
         networks.insert(identifier, mock_network.clone());
         Ok(mock_network)
     }
 
-    /// Routes a message to the appropriate mock network based on the target node identifier.
-    pub fn route_message(&self, message: Message) -> anyhow::Result<()> {
+    // TODO: route_event should be a closure that embeds the origin_id.
+    /// Routes an event to the appropriate mock network based on the target node identifier.
+    pub fn route_event(&self, origin_id: Identifier, target_id: Identifier, event: Event) -> anyhow::Result<()> {
         let networks = self
             .networks
             .read()
-            .map_err(|_| anyhow!("Failed to acquire read lock on network hub"))?;
+            .map_err(|_| anyhow!("failed to acquire read lock on network hub"))?;
 
-        if let Some(network) = networks.get(&message.target_node_id) {
+        if let Some(network) = networks.get(&target_id) {
             network
-                .incoming_message(message)
-                .context("Failed to send message through network")?;
+                .incoming_event(origin_id, event)
+                .context("failed to send event through network")?;
             Ok(())
         } else {
             Err(anyhow!(
-                "Network with identifier {} not found",
-                message.target_node_id
+                "network with identifier {} not found", target_id
             ))
         }
     }

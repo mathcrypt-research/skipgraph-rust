@@ -3,15 +3,15 @@ use crate::core::model::direction::Direction;
 use crate::core::Identifier;
 
 #[derive(Debug, Clone, Copy)]
-pub struct IdentifierSearchRequest {
+pub struct IdSearchReq {
     pub target: Identifier,
     pub level: LookupTableLevel,
     pub direction: Direction,
 }
 
-impl IdentifierSearchRequest {
+impl IdSearchReq {
     pub fn new(target: Identifier, level: LookupTableLevel, direction: Direction) -> Self {
-        IdentifierSearchRequest {
+        IdSearchReq {
             target,
             level,
             direction,
@@ -43,13 +43,13 @@ impl IdentifierSearchRequest {
 /// This struct derives the `Debug` trait, enabling it to be formatted using the `{:?}` formatter
 /// for debugging purposes.
 #[derive(Debug, Clone, Copy)]
-pub struct IdentifierSearchResult {
+pub struct IdSearchRes {
     target: Identifier,
     termination_level: LookupTableLevel,
     result: Identifier,
 }
 
-impl IdentifierSearchResult {
+impl IdSearchRes {
     /// Constructs a new `IdentifierSearchResult` instance.
     ///
     /// # Parameters
@@ -63,7 +63,7 @@ impl IdentifierSearchResult {
     /// Returns a new `IdentifierSearchResult` instance populated with the provided `target`, `level`,
     /// and `result` parameters.
     pub fn new(target: Identifier, level: LookupTableLevel, result: Identifier) -> Self {
-        IdentifierSearchResult {
+        IdSearchRes {
             target,
             termination_level: level,
             result,

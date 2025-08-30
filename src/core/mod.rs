@@ -10,5 +10,5 @@ pub use crate::core::lookup::LookupTableLevel;
 pub use crate::core::model::address::Address;
 pub use crate::core::model::identifier::Identifier;
 pub use crate::core::model::memvec::MembershipVector;
-pub use model::search::IdentifierSearchRequest;
-pub use model::search::IdentifierSearchResult;
+pub use model::search::IdSearchReq;
+pub use model::search::IdSearchRes;

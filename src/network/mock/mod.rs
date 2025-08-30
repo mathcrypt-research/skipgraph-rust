@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod hub;
+pub(crate) mod hub;
 #[cfg(test)]
 mod network;
 #[cfg(test)]
