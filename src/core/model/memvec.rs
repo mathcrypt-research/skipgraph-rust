@@ -20,7 +20,7 @@ impl MembershipVector {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<MembershipVector> {
         if bytes.len() > model::IDENTIFIER_SIZE_BYTES {
             Err(anyhow!(
-                "Membership Vector size is too large, expected {} bytes, got {} bytes",
+                "membership vector size is too large, expected {} bytes, got {} bytes",
                 model::IDENTIFIER_SIZE_BYTES,
                 bytes.len()
             ))
@@ -42,7 +42,7 @@ impl MembershipVector {
     ///
     /// * `anyhow::Result<MembershipVector>` - The resulting MembershipVector or an error if the input is invalid.
     pub fn from_string(s: &str) -> anyhow::Result<MembershipVector> {
-        let bytes = hex::decode(s).context("Failed to decode hex string")?;
+        let bytes = hex::decode(s).context("failed to decode hex string")?;
         MembershipVector::from_bytes(&bytes)
     }
 
@@ -54,7 +54,7 @@ impl MembershipVector {
             if i > 0 {
                 result.push(' ');
             }
-            write!(result, "{b:08b}").expect("Writing to String should never fail");
+            write!(result, "{b:08b}").expect("writing to String should never fail");
         }
         result
     }

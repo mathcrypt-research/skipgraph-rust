@@ -52,7 +52,7 @@ impl Debug for ArrayLookupTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(_) => return write!(f, "Failed to acquire read lock on the lookup table"),
+            Err(_) => return write!(f, "failed to acquire read lock on the lookup table"),
         };
         writeln!(f, "ArrayLookupTable: {{")?;
         for (i, (l, r)) in inner.left.iter().zip(inner.right.iter()).enumerate() {
@@ -72,14 +72,14 @@ impl LookupTable for ArrayLookupTable {
     ) -> anyhow::Result<()> {
         if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
-                "Position is larger than the max lookup table entry number: {}",
+                "position is larger than the max lookup table entry number: {}",
                 level
             ));
         }
 
         let mut inner = match self.inner.write() {
             Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("Failed to acquire write lock on the lookup table")),
+            Err(_) => return Err(anyhow!("failed to acquire write lock on the lookup table")),
         };
 
         match direction {
@@ -94,7 +94,7 @@ impl LookupTable for ArrayLookupTable {
         // Log the update operation
         let _enter = self.span.enter();
         tracing::trace!(
-            "Updated entry at level {} in direction {:?} with identity {:?}",
+            "updated entry at level {} in direction {:?} with identity {:?}",
             level,
             direction,
             identity
@@ -106,14 +106,14 @@ impl LookupTable for ArrayLookupTable {
     fn remove_entry(&self, level: LookupTableLevel, direction: Direction) -> anyhow::Result<()> {
         if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
-                "Position is larger than the max lookup table entry number: {}",
+                "position is larger than the max lookup table entry number: {}",
                 level
             ));
         }
 
         let mut inner = match self.inner.write() {
             Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("Failed to acquire write lock on the lookup table")),
+            Err(_) => return Err(anyhow!("failed to acquire write lock on the lookup table")),
         };
 
         // Record the current entry before removing it for logging
@@ -134,7 +134,7 @@ impl LookupTable for ArrayLookupTable {
         // Log the remove operation
         let _enter = self.span.enter();
         tracing::trace!(
-            "Removed entry at level {} in direction {:?}: {:?}",
+            "removed entry at level {} in direction {:?}: {:?}",
             level,
             direction,
             current_entry
@@ -153,14 +153,14 @@ impl LookupTable for ArrayLookupTable {
     ) -> anyhow::Result<Option<Identity>> {
         if level >= LOOKUP_TABLE_LEVELS {
             return Err(anyhow!(
-                "Position is larger than the max lookup table entry number: {}",
+                "position is larger than the max lookup table entry number: {}",
                 level
             ));
         }
 
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
+            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
         };
 
         let entry = match direction {
@@ -171,7 +171,7 @@ impl LookupTable for ArrayLookupTable {
         // Log the get operation
         let _enter = self.span.enter();
         tracing::trace!(
-            "Get entry at level {} in direction {:?}: {:?}",
+            "get entry at level {} in direction {:?}: {:?}",
             level,
             direction,
             entry
@@ -217,7 +217,7 @@ impl LookupTable for ArrayLookupTable {
     fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
+            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
         };
 
         let mut neighbors = Vec::new();
@@ -233,7 +233,7 @@ impl LookupTable for ArrayLookupTable {
     fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("Failed to acquire read lock on the lookup table")),
+            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
         };
 
         let mut neighbors = Vec::new();

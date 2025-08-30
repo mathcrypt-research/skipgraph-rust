@@ -67,7 +67,7 @@ pub fn random_identifier_greater_than(target: &Identifier) -> Identifier {
         ZERO => random_identifier(),
         MAX => {
             // If the target is the maximum identifier, we cannot generate a greater one.
-            panic!("Cannot generate a random identifier greater than the maximum identifier.");
+            panic!("cannot generate a random identifier greater than the maximum identifier.");
         }
         _ => {
             // Keep making the bytes from the target identifier greater until we have a valid identifier.
@@ -79,7 +79,7 @@ pub fn random_identifier_greater_than(target: &Identifier) -> Identifier {
                 }
             }
             Identifier::from_bytes(&bytes).unwrap_or_else(|_| {
-                panic!("Failed to create a valid identifier from bytes: {bytes:?}")
+                panic!("failed to create a valid identifier from bytes: {bytes:?}")
             })
         }
     }
@@ -131,7 +131,7 @@ pub fn random_identifier_less_than(target: &Identifier) -> Identifier {
     match *target {
         ZERO => {
             // If the target is zero, we cannot generate a lesser identifier.
-            panic!("Cannot generate a random identifier less than zero.");
+            panic!("cannot generate a random identifier less than zero.");
         }
         MAX => random_identifier(),
         _ => {
@@ -145,7 +145,7 @@ pub fn random_identifier_less_than(target: &Identifier) -> Identifier {
             }
 
             Identifier::from_bytes(&bytes).unwrap_or_else(|_| {
-                panic!("Failed to create a valid identifier from bytes: {bytes:?}")
+                panic!("failed to create a valid identifier from bytes: {bytes:?}")
             })
         }
     }
@@ -354,7 +354,7 @@ where
     for handle in handles {
         let elapsed = start.elapsed();
         if elapsed >= timeout {
-            return Err("Timeout".to_string());
+            return Err("timeout".to_string());
         }
 
         // Remaining time to wait for this thread to finish
@@ -397,13 +397,13 @@ where
     });
 
     if let Ok(join_res) = rx.recv_timeout(timeout) {
-        join_thread.join().expect("Failed to join thread");
+        join_thread.join().expect("failed to join thread");
         match join_res {
             Ok(_) => Ok(()),
-            Err(e) => Err(format!("Thread panicked: {e:?}")),
+            Err(e) => Err(format!("thread panicked: {e:?}")),
         }
     } else {
-        Err("Thread timed out".to_string())
+        Err("thread timed out".to_string())
     }
 }
 
@@ -491,7 +491,7 @@ mod test {
         }
         assert!(
             failure_count < 1000,
-            "Failed to generate greater identifiers for all targets."
+            "failed to generate greater identifiers for all targets."
         );
     }
 
@@ -534,7 +534,7 @@ mod test {
         }
         assert!(
             failure_count < 1000,
-            "Failed to generate lesser identifiers for all targets."
+            "failed to generate lesser identifiers for all targets."
         );
     }
 }

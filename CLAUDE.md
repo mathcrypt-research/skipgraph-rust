@@ -236,3 +236,38 @@ impl BadStruct {
 - **Performance**: Fewer lock acquisitions for operations affecting multiple fields
 
 **Reference Implementation**: See `MockNetwork` struct in `src/network/mock/network.rs` - uses `Arc<RwLock<InnerMockNetwork>>` pattern where `InnerMockNetwork` contains all mutable state, while individual components like `Arc<NetworkHub>` provide their own internal thread-safety.
+
+## Code Style Guidelines
+
+### Lowercase Error Messages and Logs
+
+**Principle**: All error messages, log statements, and panic messages must be entirely lowercase to maintain consistency across the codebase.
+
+**Examples**:
+```rust
+// GOOD: Lowercase error messages
+return Err(anyhow!("failed to acquire read lock on core"));
+tracing::error!("connection timeout occurred");
+panic!("invalid state: expected Some but got None");
+
+// BAD: Uppercase error messages  
+return Err(anyhow!("Failed to acquire read lock on core"));
+tracing::error!("Connection timeout occurred");
+panic!("Invalid state: expected Some but got None");
+```
+
+**Applies to**:
+- `anyhow!()` macro error messages
+- `tracing::*!()` macro log messages (error, warn, info, debug, trace)
+- `panic!()` macro messages
+- `.expect()` and `.context()` strings
+- Error messages in `Result::Err()` variants
+- Test assertion messages
+
+**Why Lowercase**:
+- **Consistency**: Ensures uniform error reporting across all modules
+- **Readability**: Lowercase messages are easier to scan in log files
+- **Professional**: Avoids the appearance of "shouting" in error messages
+- **Parsability**: Consistent casing makes log parsing more reliable
+
+**Enforcement**: This style is mandatory for all new code and should be applied when modifying existing error handling.

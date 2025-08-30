@@ -124,7 +124,7 @@ impl Identifier {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Identifier> {
         if bytes.len() > model::IDENTIFIER_SIZE_BYTES {
             return Err(anyhow!(
-                "Identifier size is too large, expected {} bytes, got {} bytes",
+                "identifier size is too large, expected {} bytes, got {} bytes",
                 model::IDENTIFIER_SIZE_BYTES,
                 bytes.len()
             ));

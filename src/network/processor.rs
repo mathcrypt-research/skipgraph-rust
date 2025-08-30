@@ -1,38 +1,41 @@
+use crate::network::{EventProcessorCore, Event};
 use anyhow::anyhow;
 use std::sync::{Arc, RwLock};
-use crate::network::{Message, MessageProcessorCore};
+use crate::core::Identifier;
 
-/// A thread-safe wrapper that enforces internal thread-safety for message processors.
-/// This type guarantees that all message processing is properly synchronized.
+/// A thread-safe wrapper that enforces internal thread-safety for event processors.
+/// This type guarantees that all event processing is properly synchronized.
 #[derive(Clone)]
 pub struct MessageProcessor {
-    core: Arc<RwLock<Box<dyn MessageProcessorCore>>>,
+    core: Arc<RwLock<Box<dyn EventProcessorCore>>>,
 }
 
 impl MessageProcessor {
-    /// Creates a new thread-safe message processor from a core implementation.
-    pub fn new(core: Box<dyn MessageProcessorCore>) -> Self {
+    /// Creates a new thread-safe event processor from a core implementation.
+    pub fn new(core: Box<dyn EventProcessorCore>) -> Self {
         Self {
             core: Arc::new(RwLock::new(core)),
         }
     }
 
-    /// Process an incoming message with guaranteed thread-safety.
-    pub fn process_incoming_message(&self, message: Message) -> anyhow::Result<()> {
-        let core = self.core.read()
-            .map_err(|_| anyhow!("Failed to acquire read lock on message processor"))?;
-        core.process_incoming_message(message)
+    /// Process an incoming event with guaranteed thread-safety.
+    pub fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
+        let core = self
+            .core
+            .read()
+            .map_err(|_| anyhow!("failed to acquire read lock on event processor"))?;
+        core.process_incoming_event(origin_id, event)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::testutil::fixtures::random_identifier;
+    use crate::network::Event;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use crate::core::Identifier;
-    use crate::network::Payload;
-    
-    // A mock implementation of MessageProcessorCore that counts the number of processed messages.
+
+    // A mock implementation of EventProcessorCore that counts the number of processed events.
     struct MockMessageProcessorCore {
         counter: Arc<AtomicUsize>,
     }
@@ -49,8 +52,8 @@ mod tests {
         }
     }
 
-    impl MessageProcessorCore for MockMessageProcessorCore {
-        fn process_incoming_message(&self, _message: Message) -> anyhow::Result<()> {
+    impl EventProcessorCore for MockMessageProcessorCore {
+        fn process_incoming_event(&self, _origin_id: Identifier, _event: Event) -> anyhow::Result<()> {
             self.counter.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -59,28 +62,26 @@ mod tests {
     /// This test verifies that `MessageProcessor` correctly supports shallow cloning,
     /// i.e., cloned instances share the same underlying core processor.
     #[test]
-    fn test_message_processor_shallow_cloning() {
+    fn test_event_processor_shallow_cloning() {
         let mock_core = MockMessageProcessorCore::new();
         let counter_ref = mock_core.get_counter();
         let processor = MessageProcessor::new(Box::new(mock_core));
         let processor_clone = processor.clone();
 
-        let test_message = Message {
-            payload: Payload::TestMessage("test".to_string()),
-            target_node_id: Identifier::from_bytes(&[0; 32]).unwrap(),
-        };
+        let test_event = Event::TestMessage("test".to_string());
 
         assert_eq!(counter_ref.load(Ordering::SeqCst), 0);
 
-        processor.process_incoming_message(test_message).unwrap();
+        let origin_id = random_identifier();
+        processor.process_incoming_event(origin_id, test_event).unwrap();
         assert_eq!(counter_ref.load(Ordering::SeqCst), 1);
 
-        let test_message2 = Message {
-            payload: Payload::TestMessage("test2".to_string()),
-            target_node_id: Identifier::from_bytes(&[1; 32]).unwrap(),
-        };
-
-        processor_clone.process_incoming_message(test_message2).unwrap();
+        let origin_id2 = random_identifier();
+        let test_event2 = Event::TestMessage("test2".to_string());
+        
+        processor_clone
+            .process_incoming_event(origin_id2, test_event2)
+            .unwrap();
         assert_eq!(counter_ref.load(Ordering::SeqCst), 2);
     }
 }

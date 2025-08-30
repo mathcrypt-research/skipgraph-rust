@@ -297,17 +297,17 @@ mod tests {
                                 (Some(ref read_val), Some(ref last_write)) => {
                                     assert_eq!(
                                         read_val, last_write,
-                                        "Thread {t_id}: Read value {read_val:?} does not match last write {last_write:?}"
+                                        "thread {t_id}: read value {read_val:?} does not match last write {last_write:?}"
                                     );
                                 }
                                 (Some(ref read_val), None) => {
                                     panic!(
-                                        "Thread {t_id}: Read value {read_val:?} does not match last write None"
+                                        "thread {t_id}: read value {read_val:?} does not match last write None"
                                     );
                                 }
                                 _ => {
                                     panic!(
-                                        "Invalid state: read_val_opt: {read_val_opt:?}, last_write_opt: {last_write_opt:?}",
+                                        "invalid state: read_val_opt: {read_val_opt:?}, last_write_opt: {last_write_opt:?}",
                                     );
                                 }
                             }
@@ -330,7 +330,7 @@ mod tests {
                                 last_writes.remove(&(level, direction));
                             }
                         }
-                        _ => panic!("Invalid operation"),
+                        _ => panic!("invalid operation"),
                     }
                 }
             });
