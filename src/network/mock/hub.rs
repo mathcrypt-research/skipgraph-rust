@@ -43,7 +43,7 @@ impl NetworkHub {
         Ok(mock_network)
     }
 
-    // TODO: route_event should be a closure that embeds the origin_id.
+    // TODO: https://github.com/thep2p/skipgraph-rust/issues/44
     /// Routes an event to the appropriate mock network based on the target node identifier.
     pub fn route_event(&self, origin_id: Identifier, target_id: Identifier, event: Event) -> anyhow::Result<()> {
         let networks = self
