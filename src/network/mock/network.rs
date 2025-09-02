@@ -1,7 +1,7 @@
 use crate::network::mock::hub::NetworkHub;
 use crate::network::{Event, MessageProcessor, Network};
 use anyhow::{anyhow, Context};
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use crate::core::Identifier;
 
 /// MockNetwork is a mock implementation of the Network trait for testing purposes.
@@ -38,9 +38,7 @@ impl MockNetwork {
     ///   Returns:
     /// * `Result<(), anyhow::Error>`: Returns Ok if the event was processed successfully, or an error if processing failed.
     pub fn incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let core_guard = self.core
-            .read()
-            .map_err(|_| anyhow!("failed to acquire read lock on core"))?;
+        let core_guard = self.core.read();
         
         let processor = match core_guard.processor.as_ref() {
             Some(p) => p,
@@ -55,7 +53,7 @@ impl MockNetwork {
 
 impl Clone for MockNetwork {
     fn clone(&self) -> Self {
-        let core_guard = self.core.read().unwrap();
+        let core_guard = self.core.read();
         MockNetwork {
             core: RwLock::new(InnerMockNetwork {
                 hub: core_guard.hub.clone(),
@@ -69,9 +67,7 @@ impl Clone for MockNetwork {
 impl Network for MockNetwork {
     /// Sends an event through the mock network by routing it through the NetworkHub.
     fn send_event(&self, target_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let core_guard = self.core
-            .read()
-            .map_err(|_| anyhow!("failed to acquire read lock on core"))?;
+        let core_guard = self.core.read();
         
         core_guard.hub
             .route_event(core_guard.id, target_id, event)
@@ -85,9 +81,7 @@ impl Network for MockNetwork {
         &self,
         processor: MessageProcessor,
     ) -> anyhow::Result<()> {
-        let mut core_guard = self.core
-            .write()
-            .map_err(|_| anyhow!("failed to acquire write lock on core"))?;
+        let mut core_guard = self.core.write();
         
         match core_guard.processor.as_ref() {
             Some(_) => Err(anyhow!("an event processor is already registered")),
