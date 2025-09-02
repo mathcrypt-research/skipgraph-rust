@@ -4,7 +4,8 @@ use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use anyhow::anyhow;
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use tracing::{Level, Span};
 
 /// The number of levels in the lookup table is determined by the size of the identifier in bits (that is
@@ -50,10 +51,7 @@ impl Clone for ArrayLookupTable {
 
 impl Debug for ArrayLookupTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(_) => return write!(f, "failed to acquire read lock on the lookup table"),
-        };
+        let inner = self.inner.read();
         writeln!(f, "ArrayLookupTable: {{")?;
         for (i, (l, r)) in inner.left.iter().zip(inner.right.iter()).enumerate() {
             writeln!(f, "Level: {i}, Left: {l:?}, Right: {r:?}")?;
@@ -77,10 +75,7 @@ impl LookupTable for ArrayLookupTable {
             ));
         }
 
-        let mut inner = match self.inner.write() {
-            Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("failed to acquire write lock on the lookup table")),
-        };
+        let mut inner = self.inner.write();
 
         match direction {
             Direction::Left => {
@@ -111,10 +106,7 @@ impl LookupTable for ArrayLookupTable {
             ));
         }
 
-        let mut inner = match self.inner.write() {
-            Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("failed to acquire write lock on the lookup table")),
-        };
+        let mut inner = self.inner.write();
 
         // Record the current entry before removing it for logging
         let current_entry = match direction {
@@ -158,10 +150,7 @@ impl LookupTable for ArrayLookupTable {
             ));
         }
 
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
-        };
+        let inner = self.inner.read();
 
         let entry = match direction {
             Direction::Left => inner.left[level].clone(),
@@ -185,11 +174,7 @@ impl LookupTable for ArrayLookupTable {
     /// Returns true if the entries are equal, false otherwise.
     fn equal(&self, other: &dyn LookupTable) -> bool {
         // iterates over the levels and compares the entries in the left and right directions
-        let inner = self.inner.read().unwrap_or_else(|poisoned| {
-            // If the lock is poisoned, recover the data to prevent cascade failure
-            // This is safe because we're only reading for comparison
-            poisoned.into_inner()
-        });
+        let inner = self.inner.read();
         for l in 0..LOOKUP_TABLE_LEVELS {
             // Check if the left entry is equal
             if let Ok(other_entry) = other.get_entry(l, Direction::Left) {
@@ -215,10 +200,7 @@ impl LookupTable for ArrayLookupTable {
 
     /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
     fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
-        };
+        let inner = self.inner.read();
 
         let mut neighbors = Vec::new();
         for (level, entry) in inner.left.iter().enumerate() {
@@ -231,10 +213,7 @@ impl LookupTable for ArrayLookupTable {
 
     /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
     fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-        let inner = match self.inner.read() {
-            Ok(guard) => guard,
-            Err(_) => return Err(anyhow!("failed to acquire read lock on the lookup table")),
-        };
+        let inner = self.inner.read();
 
         let mut neighbors = Vec::new();
         for (level, entry) in inner.right.iter().enumerate() {

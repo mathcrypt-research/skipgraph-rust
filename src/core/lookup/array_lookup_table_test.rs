@@ -243,7 +243,8 @@ mod tests {
     #[test]
     fn test_randomized_concurrent_operations_with_validation() {
         use rand::Rng;
-        use std::sync::{Arc, Barrier, Mutex};
+        use parking_lot::Mutex;
+        use std::sync::{Arc, Barrier};
         use std::thread;
 
         // Shared context is an atomic unit shared between threads,
@@ -286,7 +287,7 @@ mod tests {
                     // println!("Thread {}: op: {}, level: {}, direction: {:?}", t_id, op, level, direction);
                     match op {
                         0 => {
-                            let (table, last_writes) = &mut *shared_ref.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            let (table, last_writes) = &mut *shared_ref.lock();
                             let read_val_opt = table.get_entry(level, direction).unwrap();
 
                             let last_write_opt = last_writes.get(&(level, direction)).cloned();
@@ -314,7 +315,7 @@ mod tests {
                         }
                         1 => {
                             // write
-                            let (table, last_writes) = &mut *shared_ref.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            let (table, last_writes) = &mut *shared_ref.lock();
 
                             let id = random_identity();
                             if table.update_entry(id.clone(), level, direction).is_ok() {
@@ -324,7 +325,7 @@ mod tests {
                         }
                         2 => {
                             // remove atomically
-                            let (table, last_writes) = &mut *shared_ref.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            let (table, last_writes) = &mut *shared_ref.lock();
                             if table.remove_entry(level, direction).is_ok() {
                                 // Remove the last written entry
                                 last_writes.remove(&(level, direction));

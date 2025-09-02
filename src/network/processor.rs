@@ -1,6 +1,6 @@
 use crate::network::{EventProcessorCore, Event};
-use anyhow::anyhow;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use crate::core::Identifier;
 
 /// A thread-safe wrapper that enforces internal thread-safety for event processors.
@@ -20,10 +20,7 @@ impl MessageProcessor {
 
     /// Process an incoming event with guaranteed thread-safety.
     pub fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let core = self
-            .core
-            .read()
-            .map_err(|_| anyhow!("failed to acquire read lock on event processor"))?;
+        let core = self.core.read();
         core.process_incoming_event(origin_id, event)
     }
 }
