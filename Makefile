@@ -7,7 +7,7 @@ install-lint:
 .PHONEY lint:
 lint:
 	@echo "Running clippy"
-	@cargo clippy --all-targets --all-features -- -D warnings
+	@cargo clippy --all-targets --all-features -- -D warnings -D deprecated
 
 .PHONY install-rustfmt:
 install-rustfmt:

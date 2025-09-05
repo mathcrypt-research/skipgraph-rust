@@ -307,4 +307,8 @@ impl Clone for FixedSizeType {
 
 **Reference Implementation**: See core model types like `Identifier`, `MembershipVector`, `Direction`, `Address`, `Identity` in `src/core/model/`
 
+**Enforcement**: This pattern is enforced by the linter configuration:
+- Makefile: `make lint` runs clippy with `-D deprecated` and `-D warnings`
+- Clippy's `clone_on_copy` rule catches explicit `.clone()` calls on Copy types and fails the build
+
 **Note**: The `#[allow(useless_deprecated)]` attribute is required to bypass Rust's lint that would otherwise prevent this pattern from compiling.

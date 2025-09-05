@@ -51,6 +51,7 @@ mod tests {
     #[test]
     fn test_identity() {
         let id = random_identifier();
+        let _ = id.clone();
         let mem_vec = random_membership_vector();
         let address = Address::new("localhost", "1234");
         let identity = Identity::new(&id, &mem_vec, address);
