@@ -21,7 +21,7 @@ pub const MAX: Identifier = Identifier([255u8; IDENTIFIER_SIZE_BYTES]);
 /// - CompareGreater: the left identifier is greater than the right identifier.
 /// - CompareEqual: the two identifiers are equal.
 /// - CompareLess: the left identifier is less than the right identifier.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ComparisonResult {
     CompareGreater,
     CompareEqual,
@@ -31,6 +31,7 @@ pub enum ComparisonResult {
 /// ComparisonContext represents the context of a comparison between two identifiers.
 /// It contains the result of the comparison, the left and right identifiers, and the index of the differing byte.
 /// The differing byte is the first byte where the two identifiers differ.
+#[derive(Copy, Clone)]
 pub struct ComparisonContext {
     result: ComparisonResult,
     left: Identifier,
@@ -84,7 +85,7 @@ impl Display for ComparisonContext {
 }
 
 // Identifier represents a 32-byte unique identifier for a Skip Graph node.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier([u8; IDENTIFIER_SIZE_BYTES]);
 
 impl Identifier {

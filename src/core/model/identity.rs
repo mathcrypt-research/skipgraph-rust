@@ -1,7 +1,7 @@
 use crate::core::{Address, Identifier, MembershipVector};
 
 /// Identity is an immutable struct that represents a node's identity in the network (ID, MembershipVector, Address).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Identity {
     id: Identifier,
     mem_vec: MembershipVector,

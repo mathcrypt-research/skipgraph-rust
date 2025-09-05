@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context};
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct MembershipVector([u8; model::IDENTIFIER_SIZE_BYTES]);
 
 /// A struct representing a membership vector with a fixed size of 32 bytes.

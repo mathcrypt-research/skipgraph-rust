@@ -292,8 +292,8 @@ pub fn random_lookup_table(n: usize) -> ArrayLookupTable {
     let lt = ArrayLookupTable::new(&span_fixture());
     let ids = random_identities(2 * n);
     for i in 0..n {
-        lt.update_entry(ids[i].clone(), i, Direction::Left).unwrap();
-        lt.update_entry(ids[i + n].clone(), i, Direction::Right)
+        lt.update_entry(ids[i], i, Direction::Left).unwrap();
+        lt.update_entry(ids[i + n], i, Direction::Right)
             .unwrap();
     }
     lt

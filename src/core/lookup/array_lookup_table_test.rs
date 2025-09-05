@@ -25,8 +25,8 @@ mod tests {
         let id1 = random_identity();
         let id2 = random_identity();
 
-        lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
-        lt.update_entry(id2.clone(), 1, Direction::Right).unwrap();
+        lt.update_entry(id1, 0, Direction::Left).unwrap();
+        lt.update_entry(id2, 1, Direction::Right).unwrap();
 
         assert_eq!(Some(id1), lt.get_entry(0, Direction::Left).unwrap());
         assert_eq!(Some(id2), lt.get_entry(1, Direction::Right).unwrap());
@@ -58,7 +58,7 @@ mod tests {
         let lt = ArrayLookupTable::new(&span_fixture());
         let id = random_identity();
 
-        let result = lt.update_entry(id.clone(), LOOKUP_TABLE_LEVELS, Direction::Left);
+        let result = lt.update_entry(id, LOOKUP_TABLE_LEVELS, Direction::Left);
         assert!(result.is_err());
 
         let result = lt.update_entry(id, LOOKUP_TABLE_LEVELS, Direction::Right);
@@ -86,10 +86,10 @@ mod tests {
         let id1 = random_identity();
         let id2 = random_identity();
 
-        lt.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        lt.update_entry(id1, 0, Direction::Left).unwrap();
         assert_eq!(Some(id1), lt.get_entry(0, Direction::Left).unwrap());
 
-        lt.update_entry(id2.clone(), 0, Direction::Left).unwrap();
+        lt.update_entry(id2, 0, Direction::Left).unwrap();
 
         assert_eq!(Some(id2), lt.get_entry(0, Direction::Left).unwrap());
     }
@@ -127,9 +127,9 @@ mod tests {
         let identities = random_identities(2 * levels);
 
         for i in 0..levels {
-            lt.update_entry(identities[i].clone(), i, Direction::Left)
+            lt.update_entry(identities[i], i, Direction::Left)
                 .unwrap();
-            lt.update_entry(identities[i + levels].clone(), i, Direction::Right)
+            lt.update_entry(identities[i + levels], i, Direction::Right)
                 .unwrap();
         }
 
@@ -142,7 +142,7 @@ mod tests {
         for (i, id) in identities.iter().enumerate().take(num_threads) {
             let lt_ref = lt.clone();
             let barrier_ref = barrier.clone();
-            let id = id.clone();
+            let id = *id;
             let handle = thread::spawn(move || {
                 barrier_ref.wait(); // wait for all threads to be ready
                 let level = i % levels; // alternate between left and right
@@ -192,7 +192,7 @@ mod tests {
         for (i, id) in identities.iter().enumerate().take(num_threads) {
             let lt_ref = lt.clone();
             let barrier_ref = barrier.clone();
-            let id = id.clone();
+            let id = *id;
             let level = i % levels; // alternate between left and right
             let direction = if i < levels {
                 Direction::Left
@@ -204,7 +204,7 @@ mod tests {
                 barrier_ref.wait(); // wait for all threads to be ready
 
                 // Write the entry
-                lt_ref.update_entry(id.clone(), level, direction).unwrap();
+                lt_ref.update_entry(id, level, direction).unwrap();
 
                 // Read the entry back to check if it was written correctly
                 let entry = lt_ref.get_entry(level, direction).unwrap();
@@ -224,8 +224,8 @@ mod tests {
         for i in 0..levels {
             let left_entry = lt.get_entry(i, Direction::Left).unwrap();
             let right_entry = lt.get_entry(i, Direction::Right).unwrap();
-            assert_eq!(left_entry, Some(identities[i].clone()));
-            assert_eq!(right_entry, Some(identities[i + levels].clone()));
+            assert_eq!(left_entry, Some(identities[i]));
+            assert_eq!(right_entry, Some(identities[i + levels]));
         }
     }
 
@@ -293,7 +293,7 @@ mod tests {
                             let last_write_opt = last_writes.get(&(level, direction)).cloned();
 
                             // Validates the read matches the last written value to the same (level, direction).
-                            match (read_val_opt.clone(), last_write_opt.clone()) {
+                            match (read_val_opt, last_write_opt) {
                                 (None, None) => { /* no entry, no last write, expected! */ }
                                 (Some(ref read_val), Some(ref last_write)) => {
                                     assert_eq!(
@@ -318,7 +318,7 @@ mod tests {
                             let (table, last_writes) = &mut *shared_ref.lock();
 
                             let id = random_identity();
-                            if table.update_entry(id.clone(), level, direction).is_ok() {
+                            if table.update_entry(id, level, direction).is_ok() {
                                 // Update the last write map upon successful write
                                 last_writes.insert((level, direction), id);
                             }
@@ -353,7 +353,7 @@ mod tests {
         for (level, identity) in rights.iter() {
             assert_eq!(
                 lt.get_entry(*level, Direction::Right).unwrap(),
-                Some(identity.clone())
+                Some(*identity)
             );
         }
 
@@ -362,7 +362,7 @@ mod tests {
         for (level, identity) in lefts.iter() {
             assert_eq!(
                 lt.get_entry(*level, Direction::Left).unwrap(),
-                Some(identity.clone())
+                Some(*identity)
             );
         }
     }
@@ -378,17 +378,17 @@ mod tests {
         let lt2 = lt1.clone();
 
         // Update the original lookup table
-        lt1.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        lt1.update_entry(id1, 0, Direction::Left).unwrap();
 
         // Verify the cloned lookup table sees the same data
-        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1.clone()));
+        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1));
 
         // Update through the cloned lookup table
         let id2 = random_identity();
-        lt2.update_entry(id2.clone(), 1, Direction::Right).unwrap();
+        lt2.update_entry(id2, 1, Direction::Right).unwrap();
 
         // Verify the original lookup table sees the change made through the clone
-        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2.clone()));
+        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
         // Both instances should be equal since they share the same underlying data
         assert_eq!(lt1, lt2);
@@ -396,12 +396,12 @@ mod tests {
         // Verify multiple clones all share the same data
         let lt3 = lt2.clone();
         let id3 = random_identity();
-        lt3.update_entry(id3.clone(), 2, Direction::Left).unwrap();
+        lt3.update_entry(id3, 2, Direction::Left).unwrap();
 
         // All instances should see the new change
-        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
-        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
-        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3));
+        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3));
+        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3));
     }
 
     /// Tests that cloning via trait objects (Box<dyn LookupTable>) also creates shallow copies.
@@ -415,17 +415,17 @@ mod tests {
         let lt2 = lt1.clone();
 
         // Update the original lookup table
-        lt1.update_entry(id1.clone(), 0, Direction::Left).unwrap();
+        lt1.update_entry(id1, 0, Direction::Left).unwrap();
 
         // Verify the cloned lookup table sees the same data
-        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1.clone()));
+        assert_eq!(lt2.get_entry(0, Direction::Left).unwrap(), Some(id1));
 
         // Update through the cloned lookup table
         let id2 = random_identity();
-        lt2.update_entry(id2.clone(), 1, Direction::Right).unwrap();
+        lt2.update_entry(id2, 1, Direction::Right).unwrap();
 
         // Verify the original lookup table sees the change made through the clone
-        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2.clone()));
+        assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
         // Both trait objects should be equal since they share the same underlying data
         assert!(lt1.equal(&*lt2));
@@ -433,11 +433,11 @@ mod tests {
         // Test multiple levels of cloning
         let lt3 = lt2.clone();
         let id3 = random_identity();
-        lt3.update_entry(id3.clone(), 2, Direction::Left).unwrap();
+        lt3.update_entry(id3, 2, Direction::Left).unwrap();
 
         // All instances should see the new change
-        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
-        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
-        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3.clone()));
+        assert_eq!(lt1.get_entry(2, Direction::Left).unwrap(), Some(id3));
+        assert_eq!(lt2.get_entry(2, Direction::Left).unwrap(), Some(id3));
+        assert_eq!(lt3.get_entry(2, Direction::Left).unwrap(), Some(id3));
     }
 }
