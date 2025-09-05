@@ -2,7 +2,7 @@ use crate::core::lookup::LookupTableLevel;
 use crate::core::model::direction::Direction;
 use crate::core::Identifier;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub struct IdSearchReq {
     pub target: Identifier,
     pub level: LookupTableLevel,
@@ -42,7 +42,7 @@ impl IdSearchReq {
 ///
 /// This struct derives the `Debug` trait, enabling it to be formatted using the `{:?}` formatter
 /// for debugging purposes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub struct IdSearchRes {
     target: Identifier,
     termination_level: LookupTableLevel,

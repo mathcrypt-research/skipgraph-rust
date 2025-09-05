@@ -79,10 +79,10 @@ impl LookupTable for ArrayLookupTable {
 
         match direction {
             Direction::Left => {
-                inner.left[level] = Some(identity.clone());
+                inner.left[level] = Some(identity);
             }
             Direction::Right => {
-                inner.right[level] = Some(identity.clone());
+                inner.right[level] = Some(identity);
             }
         }
 
@@ -110,8 +110,8 @@ impl LookupTable for ArrayLookupTable {
 
         // Record the current entry before removing it for logging
         let current_entry = match direction {
-            Direction::Left => inner.left[level].clone(),
-            Direction::Right => inner.right[level].clone(),
+            Direction::Left => inner.left[level],
+            Direction::Right => inner.right[level],
         };
 
         match direction {
@@ -153,8 +153,8 @@ impl LookupTable for ArrayLookupTable {
         let inner = self.inner.read();
 
         let entry = match direction {
-            Direction::Left => inner.left[level].clone(),
-            Direction::Right => inner.right[level].clone(),
+            Direction::Left => inner.left[level],
+            Direction::Right => inner.right[level],
         };
 
         // Log the get operation
@@ -205,7 +205,7 @@ impl LookupTable for ArrayLookupTable {
         let mut neighbors = Vec::new();
         for (level, entry) in inner.left.iter().enumerate() {
             if let Some(identity) = entry {
-                neighbors.push((level, identity.clone()));
+                neighbors.push((level, *identity));
             }
         }
         Ok(neighbors)
@@ -218,7 +218,7 @@ impl LookupTable for ArrayLookupTable {
         let mut neighbors = Vec::new();
         for (level, entry) in inner.right.iter().enumerate() {
             if let Some(identity) = entry {
-                neighbors.push((level, identity.clone()));
+                neighbors.push((level, *identity));
             }
         }
         Ok(neighbors)
