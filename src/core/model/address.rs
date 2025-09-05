@@ -1,10 +1,18 @@
 use fixedstr::{str128, str8};
 
 /// Represents a networking address; composed of host + port
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Copy, Debug, PartialEq)]
 pub struct Address {
     host: str128, // up to 128 bytes (on stack)
     port: str8,   // up to 8 bytes (on stack)
+}
+
+#[allow(useless_deprecated)]
+impl Clone for Address {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl Address {

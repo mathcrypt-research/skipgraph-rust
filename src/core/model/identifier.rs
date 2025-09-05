@@ -21,16 +21,25 @@ pub const MAX: Identifier = Identifier([255u8; IDENTIFIER_SIZE_BYTES]);
 /// - CompareGreater: the left identifier is greater than the right identifier.
 /// - CompareEqual: the two identifiers are equal.
 /// - CompareLess: the left identifier is less than the right identifier.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Copy)]
 pub enum ComparisonResult {
     CompareGreater,
     CompareEqual,
     CompareLess,
 }
 
+#[allow(useless_deprecated)]
+impl Clone for ComparisonResult {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// ComparisonContext represents the context of a comparison between two identifiers.
 /// It contains the result of the comparison, the left and right identifiers, and the index of the differing byte.
 /// The differing byte is the first byte where the two identifiers differ.
+#[derive(Copy)]
 pub struct ComparisonContext {
     result: ComparisonResult,
     left: Identifier,
@@ -60,6 +69,14 @@ impl ComparisonContext {
     }
 }
 
+#[allow(useless_deprecated)]
+impl Clone for ComparisonContext {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// Display overloads the Display trait for ComparisonContext, allowing it to be printed upon a call to format! or to_string().
 impl Display for ComparisonContext {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -84,8 +101,16 @@ impl Display for ComparisonContext {
 }
 
 // Identifier represents a 32-byte unique identifier for a Skip Graph node.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Copy, PartialEq, Eq, Hash)]
 pub struct Identifier([u8; IDENTIFIER_SIZE_BYTES]);
+
+#[allow(useless_deprecated)]
+impl Clone for Identifier {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
 impl Identifier {
     pub fn compare(&self, other: &Identifier) -> ComparisonContext {

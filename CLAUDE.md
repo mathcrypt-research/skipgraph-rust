@@ -271,3 +271,40 @@ panic!("Invalid state: expected Some but got None");
 - **Parsability**: Consistent casing makes log parsing more reliable
 
 **Enforcement**: This style is mandatory for all new code and should be applied when modifying existing error handling.
+
+### Deprecated Clone for Copy Types Pattern
+
+**Principle**: All fixed-size types with fixed-size fields should derive `Copy` but implement `Clone` manually with deprecation warnings to encourage implicit copying over explicit `.clone()` calls.
+
+**Implementation Pattern**:
+```rust
+// Remove Clone from derive, keep Copy
+#[derive(Copy, Debug, PartialEq)]  
+pub struct FixedSizeType {
+    field: [u8; 32],  // fixed-size field
+}
+
+// Implement Clone manually with deprecation
+#[allow(useless_deprecated)]
+impl Clone for FixedSizeType {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+```
+
+**When to Apply**:
+- Types that are fixed-size (known size at compile time)
+- All fields are also fixed-size (no heap allocations, no dynamic data)
+- Examples: byte arrays, primitive types, fixed-size structs, simple enums
+
+**Benefits**:
+- **Performance**: Encourages implicit copying which is more efficient
+- **API Guidance**: Provides clear feedback to developers about preferred patterns
+- **Consistency**: Maintains uniform approach across all fixed-size types
+- **Safety**: Copy types cannot have destructors, ensuring predictable behavior
+
+**Reference Implementation**: See core model types like `Identifier`, `MembershipVector`, `Direction`, `Address`, `Identity` in `src/core/model/`
+
+**Note**: The `#[allow(useless_deprecated)]` attribute is required to bypass Rust's lint that would otherwise prevent this pattern from compiling.
