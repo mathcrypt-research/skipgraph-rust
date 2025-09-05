@@ -3,8 +3,16 @@ use anyhow::{anyhow, Context};
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, PartialEq, Eq)]
 pub struct MembershipVector([u8; model::IDENTIFIER_SIZE_BYTES]);
+
+#[allow(useless_deprecated)]
+impl Clone for MembershipVector {
+    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
 /// A struct representing a membership vector with a fixed size of 32 bytes.
 impl MembershipVector {
