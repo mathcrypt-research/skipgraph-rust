@@ -15,7 +15,7 @@ overlay or distributed key-value store.
 To use or contribute to this project, you need to have the following installed:
 
 - **Rust**: Ensure you have Rust installed. You can download it from [Rust's official website](https://rust-lang.org/). The minimum required
-  version is `rustc 1.88.0 (6b00bc388 2025-06-23)`.
+  version is `rustc 1.89.0 (29483883e 2025-08-04)`.
 - **Cargo**: Cargo is the Rust package manager and is included with the Rust installation. The minimum required version is `cargo 1.88.0 (873a06493 2025-05-10)`.
   .
 
