@@ -307,4 +307,10 @@ impl Clone for FixedSizeType {
 
 **Reference Implementation**: See core model types like `Identifier`, `MembershipVector`, `Direction`, `Address`, `Identity` in `src/core/model/`
 
+**Enforcement**: This pattern is enforced by dual mechanisms in the linter configuration:
+- **`-D deprecated`**: Makes builds fail when deprecated methods (like our deprecated Clone implementations) are used
+- **`-D warnings` (clippy::clone_on_copy)**: Catches explicit `.clone()` calls on Copy types as a fallback
+
+Since Clone is manually implemented with `#[deprecated]` on all Copy types, the `-D deprecated` flag ensures builds fail when `.clone()` is called, forcing developers to use implicit copying instead.
+
 **Note**: The `#[allow(useless_deprecated)]` attribute is required to bypass Rust's lint that would otherwise prevent this pattern from compiling.
