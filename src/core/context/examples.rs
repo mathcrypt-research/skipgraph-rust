@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use tokio::time::{sleep, Duration};
 use tracing::Span;
 
-/// Example: Using ThrowableContext for startup operations
+/// Example: Using ThrowableContext for startup operations,
 /// This demonstrates how to handle irrecoverable startup errors
 pub async fn startup_with_context_example(parent_span: &Span) -> Result<()> {
     let ctx = ThrowableContext::with_timeout(parent_span, Duration::from_secs(30));

@@ -69,13 +69,19 @@ impl ThrowableContext {
 
     /// Create a child context that inherits from a parent context.
     pub fn with_parent(&self) -> Self {
+        // Create a new span for the child context with the parent context's span as its parent
         let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "throwable_context_child");
         
         Self {
             inner: Arc::new(ContextInner {
+                // Create a child token that inherits parent's cancellation, a child cancellation
+                // token that will be automatically cancelled when the parent token is cancelled
                 token: self.inner.token.child_token(),
+                // Inherit the parent's deadline
                 deadline: self.inner.deadline,
+                // Share the same values map as the parent
                 values: Arc::clone(&self.inner.values),
+                // Set the parent context
                 parent: Some(self.clone()),
                 span,
             }),
@@ -88,12 +94,18 @@ impl ThrowableContext {
         let values: Arc<RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>> = Arc::new(RwLock::new(HashMap::new()));
         {
             let mut values_guard = values.write().unwrap();
-            values_guard.insert(TypeId::of::<T>(), Box::new(value) as Box<dyn Any + Send + Sync>);
+            values_guard.insert(
+                TypeId::of::<T>(),                                    // uses type as a key
+                Box::new(value) as Box<dyn Any + Send + Sync>        // type-erases and makes thread-safe
+            );
         }
         
         Self {
             inner: Arc::new(ContextInner {
+                // Create a child token that inherits parent's cancellation
+                // a child cancellation token that will be automatically cancelled when the parent token is cancelled
                 token: self.inner.token.child_token(),
+                // Inherit the parent's deadline
                 deadline: self.inner.deadline,
                 values,
                 parent: Some(self.clone()),
@@ -104,6 +116,7 @@ impl ThrowableContext {
 
     /// Propagates an irrecoverable error up the context chain.
     /// When it reaches the top-level context, it logs the error and terminates the program.
+    /// This function does not return normally, it always terminates the program.
     pub fn throw_irrecoverable(&self, err: anyhow::Error) -> ! {
         let _enter = self.inner.span.enter();
         
@@ -119,6 +132,7 @@ impl ThrowableContext {
     }
 
     /// Returns true if the context has been cancelled.
+    /// non-blocking check
     pub fn is_cancelled(&self) -> bool {
         self.inner.token.is_cancelled()
     }
@@ -127,10 +141,12 @@ impl ThrowableContext {
     pub fn cancel(&self) {
         let _enter = self.inner.span.enter();
         tracing::trace!("cancelling context");
+        // Cancelling the token will also cancel all child tokens
         self.inner.token.cancel();
     }
 
     /// Wait for the context to be cancelled.
+    /// This is an async method that blocks until cancellation.
     pub async fn cancelled(&self) {
         self.inner.token.cancelled().await;
     }
@@ -157,14 +173,14 @@ impl ThrowableContext {
             }
         }
         
-        // Search in parent if not found in current context
+        // Search in parent if not found in the current context
         self.inner
             .parent
             .as_ref()
             .and_then(|parent| parent.value::<T>())
     }
 
-    /// Returns the current context error if cancelled or deadline exceeded.
+    /// Returns the current context error if canceled or deadline exceeded.
     pub fn err(&self) -> Option<anyhow::Error> {
         if self.is_cancelled() {
             Some(anyhow!("context cancelled"))
@@ -176,7 +192,7 @@ impl ThrowableContext {
     }
 
     /// Runs a future with context cancellation and timeout support.
-    /// Returns an error if the context is cancelled or deadline is exceeded.
+    /// Returns an error if the context is canceled or the deadline is exceeded.
     pub async fn run<F, T>(&self, future: F) -> Result<T>
     where
         F: std::future::Future<Output = Result<T>>,
@@ -294,10 +310,11 @@ mod tests {
     #[tokio::test]
     async fn test_successful_operation() {
         let ctx = ThrowableContext::new(&span_fixture());
-        
+
         let result = ctx.run(async {
-            Ok::<i32, anyhow::Error>(42)
+            Ok(42) as Result<i32, anyhow::Error>
         }).await;
+
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
