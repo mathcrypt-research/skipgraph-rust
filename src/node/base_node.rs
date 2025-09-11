@@ -1,6 +1,6 @@
 use crate::core::model::direction::Direction;
 use crate::core::{
-    Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector,
+    Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector, ThrowableContext,
 };
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
@@ -21,6 +21,7 @@ pub(crate) struct BaseNode {
     lt: Box<dyn LookupTable>,
     net: Box<dyn Network>,
     span: Span,
+    ctx: ThrowableContext,
 }
 
 impl Node for BaseNode {
@@ -217,6 +218,11 @@ impl EventProcessorCore for BaseNode {
 }
 
 impl BaseNode {
+    /// Get a reference to the throwable context for this node.
+    pub fn context(&self) -> &ThrowableContext {
+        &self.ctx
+    }
+
     /// Create a new `BaseNode` with the provided identifier, membership vector
     /// and lookup table.
     #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
@@ -231,6 +237,9 @@ impl BaseNode {
         let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "base_node");
         let _enter = span.enter();
         
+        // Create a throwable context for this node
+        let ctx = ThrowableContext::new(&span);
+        
         tracing::trace!(
             "creating BaseNode with id {:?}, mem_vec {:?}",
             id,
@@ -243,6 +252,7 @@ impl BaseNode {
             lt,
             net,
             span: span.clone(),
+            ctx,
         };
 
         // Create a MessageProcessor from this node, instead of casting directly
@@ -253,9 +263,11 @@ impl BaseNode {
             id
         );
 
-        clone_net
-            .register_processor(processor)
-            .map_err(|e| anyhow!("could not register node in network: {}", e))?;
+        if let Err(e) = clone_net.register_processor(processor) {
+            let error = anyhow!("could not register node in network: {}", e);
+            // Use throw_irrecoverable for critical startup failures - this will terminate the program
+            node.ctx.throw_irrecoverable(error);
+        }
 
         tracing::trace!(
             "successfully created and registered BaseNode {:?}",
@@ -272,7 +284,7 @@ impl BaseNode {
 impl PartialEq for BaseNode {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.mem_vec == other.mem_vec
-        // ignore lt for equality check as comparing trait objects is non-trivial
+        // ignore lt and ctx for equality check as comparing trait objects is non-trivial
     }
 }
 
@@ -293,6 +305,7 @@ impl Clone for BaseNode {
             lt: self.lt.clone(),
             net: self.net.clone(),
             span: self.span.clone(),
+            ctx: self.ctx.clone(),
         }
     }
 }
@@ -310,12 +323,14 @@ mod tests {
     fn test_base_node() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
+        let span = span_fixture();
         let node = BaseNode {
             id,
             mem_vec,
-            lt: Box::new(ArrayLookupTable::new(&span_fixture())),
+            lt: Box::new(ArrayLookupTable::new(&span)),
             net: Box::new(Unimock::new(())), // No expectations needed for direct struct construction
-            span: span_fixture(),
+            span: span.clone(),
+            ctx: ThrowableContext::new(&span),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
