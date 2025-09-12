@@ -219,6 +219,7 @@ impl EventProcessorCore for BaseNode {
 
 impl BaseNode {
     /// Get a reference to the cancelable context for this node.
+    #[allow(dead_code)] // for now, but should remove it in the future
     pub fn context(&self) -> &CancelableContext {
         &self.ctx
     }
