@@ -16,3 +16,5 @@ tracing-appender = "0.2"
 tracing-log = "0.1"
 unimock = "0.6"
 parking_lot = "0.12"
+tokio = { version = "1.0", features = ["sync", "time", "macros", "rt", "rt-multi-thread"] }
+tokio-util = "0.7"
