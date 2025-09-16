@@ -94,7 +94,7 @@ impl IrrevocableContext {
         
         // Propagate to parent if it exists
         if let Some(parent) = &self.inner.parent {
-            tracing::trace!("propagating irrecoverable error to parent context");
+            tracing::error!("propagating irrecoverable error to parent context");
             parent.throw_irrecoverable(err);
         }
         
