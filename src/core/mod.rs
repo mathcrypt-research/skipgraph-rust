@@ -4,7 +4,7 @@ pub mod model;
 #[cfg(test)]
 pub mod testutil;
 
-pub use crate::core::context::CancelableContext;
+pub use crate::core::context::IrrevocableContext;
 pub use crate::core::lookup::array_lookup_table::ArrayLookupTable;
 pub use crate::core::lookup::array_lookup_table::LOOKUP_TABLE_LEVELS;
 pub use crate::core::lookup::LookupTable;

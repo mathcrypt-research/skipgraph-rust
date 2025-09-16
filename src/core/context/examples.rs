@@ -1,16 +1,16 @@
-//! Examples demonstrating CancelableContext usage patterns
+//! Examples demonstrating IrrevocableContext usage patterns
 //! 
 //! This module shows how to use the simplified cancelable context for
 //! cancellation and irrecoverable error handling.
 
-use crate::core::context::CancelableContext;
+use crate::core::context::IrrevocableContext;
 use anyhow::{anyhow, Result};
 use tokio::time::{sleep, Duration};
 use tracing::Span;
 
 /// Example: Basic cancellation usage
 pub async fn basic_cancellation_example(parent_span: &Span) -> Result<()> {
-    let ctx = CancelableContext::new(parent_span);
+    let ctx = IrrevocableContext::new(parent_span);
     let child_ctx = ctx.child();
     
     // Spawn background work with child context
@@ -63,7 +63,7 @@ pub async fn basic_cancellation_example(parent_span: &Span) -> Result<()> {
 /// All operations are critical - if any fail, the program should terminate
 /// In this example, all operations succeed for demonstration purposes
 pub async fn startup_example(parent_span: &Span) -> Result<()> {
-    let ctx = CancelableContext::new(parent_span);
+    let ctx = IrrevocableContext::new(parent_span);
     
     let startup_operations = vec![
         "initialize_network",
@@ -85,7 +85,7 @@ pub async fn startup_example(parent_span: &Span) -> Result<()> {
 
 /// Example: Hierarchical cancellation
 pub async fn hierarchical_cancellation_example(parent_span: &Span) -> Result<()> {
-    let root_ctx = CancelableContext::new(parent_span);
+    let root_ctx = IrrevocableContext::new(parent_span);
     let service1_ctx = root_ctx.child();
     let service2_ctx = root_ctx.child();
     
@@ -143,7 +143,7 @@ pub async fn hierarchical_cancellation_example(parent_span: &Span) -> Result<()>
 
 /// Example: Error propagation pattern
 pub async fn error_propagation_example(parent_span: &Span) -> Result<()> {
-    let root_ctx = CancelableContext::new(parent_span);
+    let root_ctx = IrrevocableContext::new(parent_span);
     let child_ctx = root_ctx.child();
     let _grandchild_ctx = child_ctx.child();
     

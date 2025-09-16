@@ -1,6 +1,6 @@
 use crate::core::model::direction::Direction;
 use crate::core::{
-    CancelableContext, Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector,
+    IrrevocableContext, Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector,
 };
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
@@ -21,7 +21,7 @@ pub(crate) struct BaseNode {
     lt: Box<dyn LookupTable>,
     net: Box<dyn Network>,
     span: Span,
-    ctx: CancelableContext,
+    ctx: IrrevocableContext,
 }
 
 impl Node for BaseNode {
@@ -220,7 +220,7 @@ impl EventProcessorCore for BaseNode {
 impl BaseNode {
     /// Get a reference to the cancelable context for this node.
     #[allow(dead_code)] // for now, but should remove it in the future
-    pub fn context(&self) -> &CancelableContext {
+    pub fn context(&self) -> &IrrevocableContext {
         &self.ctx
     }
 
@@ -239,7 +239,7 @@ impl BaseNode {
         let _enter = span.enter();
         
         // Create a cancelable context for this node
-        let ctx = CancelableContext::new(&span);
+        let ctx = IrrevocableContext::new(&span);
         
         tracing::trace!(
             "creating BaseNode with id {:?}, mem_vec {:?}",
@@ -331,7 +331,7 @@ mod tests {
             lt: Box::new(ArrayLookupTable::new(&span)),
             net: Box::new(Unimock::new(())), // No expectations needed for direct struct construction
             span: span.clone(),
-            ctx: CancelableContext::new(&span),
+            ctx: IrrevocableContext::new(&span),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
