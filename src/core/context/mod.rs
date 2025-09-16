@@ -151,7 +151,7 @@ mod tests {
     use crate::core::testutil::fixtures::span_fixture;
     use tokio::time::{sleep, Duration};
 
-    // this test ensures that cancelling a context works as expected
+    /// this test ensures that cancelling a context works as expected
     #[tokio::test]
     async fn test_basic_cancellation() {
         let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
@@ -161,7 +161,7 @@ mod tests {
         assert!(ctx.is_cancelled());
     }
 
-    // this test ensures that cancelling a parent context cancels its children
+    /// this test ensures that cancelling a parent context cancels its children
     #[tokio::test]
     async fn test_child_cancellation() {
         let parent = IrrevocableContext::new(&span_fixture(), "test_context");
@@ -175,7 +175,7 @@ mod tests {
         assert!(child.is_cancelled());
     }
 
-    // this test ensures that running an operation completes successfully if its context is not canceled
+    /// this test ensures that running an operation completes successfully if its context is not canceled
     #[tokio::test]
     async fn test_successful_operation() {
         let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
@@ -188,8 +188,8 @@ mod tests {
         assert_eq!(result.unwrap(), 42);
     }
 
-    // this test ensures that running an operation respects cancellation
-    // the operation should not complete if the context is canceled
+    /// this test ensures that running an operation respects cancellation
+    /// the operation should not complete if the context is canceled
     #[tokio::test]
     async fn test_run_with_cancellation() {
         let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
@@ -214,7 +214,7 @@ mod tests {
     }
 
 
-    // this test ensures that nested child contexts are canceled when the root context is canceled
+    /// this test ensures that nested child contexts are canceled when the root context is canceled
     #[tokio::test]
     async fn test_nested_children() {
         let root = IrrevocableContext::new(&span_fixture(), "test_nested_children_root");
@@ -235,8 +235,8 @@ mod tests {
         assert!(grandchild.is_cancelled());
     }
 
-    // Test that we can create the error propagation hierarchy
-    // (We can't test throw_irrecoverable since it exits the program)
+    /// Test that we can create the error propagation hierarchy
+    /// (We can't test throw_irrecoverable since it exits the program)
     #[test]
     fn test_error_propagation_structure() {
         let root = IrrevocableContext::new(&span_fixture(), "test_error_propagation_root");
