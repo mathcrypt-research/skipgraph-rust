@@ -32,8 +32,8 @@ struct ContextInner {
 
 impl IrrevocableContext {
     /// Create a new root context
-    pub fn new(parent_span: &Span) -> Self {
-        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context");
+    pub fn new(parent_span: &Span, tag: &str) -> Self {
+        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context", tag = tag);
         
         Self {
             inner: Arc::new(ContextInner {
@@ -45,9 +45,8 @@ impl IrrevocableContext {
     }
 
     /// Create a child context that inherits cancellation from the parent
-    pub fn child(&self) -> Self {
-        let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "irrevocable_context_child");
-        
+    pub fn child(&self, tag: &str) -> Self {
+        let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "irrevocable_context_child", tag = tag);
         Self {
             inner: Arc::new(ContextInner {
                 token: self.inner.token.child_token(),
@@ -143,7 +142,7 @@ mod tests {
     // this test ensures that cancelling a context works as expected
     #[tokio::test]
     async fn test_basic_cancellation() {
-        let ctx = IrrevocableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
         
         assert!(!ctx.is_cancelled());
         ctx.cancel();
@@ -153,8 +152,8 @@ mod tests {
     // this test ensures that cancelling a parent context cancels its children
     #[tokio::test]
     async fn test_child_cancellation() {
-        let parent = IrrevocableContext::new(&span_fixture());
-        let child = parent.child();
+        let parent = IrrevocableContext::new(&span_fixture(), "test_context");
+        let child = parent.child("test_child");
         
         assert!(!child.is_cancelled());
         parent.cancel(); // Cancel parent
@@ -167,7 +166,7 @@ mod tests {
     // this test ensures that running an operation completes successfully if its context is not canceled
     #[tokio::test]
     async fn test_successful_operation() {
-        let ctx = IrrevocableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
 
         let result = ctx.run(async {
             Ok::<i32, anyhow::Error>(42)
@@ -181,7 +180,7 @@ mod tests {
     // the operation should not complete if the context is canceled
     #[tokio::test]
     async fn test_run_with_cancellation() {
-        let ctx = IrrevocableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
         
         // Cancel the context
         ctx.cancel();
@@ -206,10 +205,10 @@ mod tests {
     // this test ensures that nested child contexts are canceled when the root context is canceled
     #[tokio::test]
     async fn test_nested_children() {
-        let root = IrrevocableContext::new(&span_fixture());
-        let child1 = root.child();
-        let child2 = child1.child();
-        let grandchild = child2.child();
+        let root = IrrevocableContext::new(&span_fixture(), "test_nested_children_root");
+        let child1 = root.child("child1");
+        let child2 = child1.child("child2");
+        let grandchild = child2.child("grandchild");
 
         // Initially, none should be cancelled
         assert!(!grandchild.is_cancelled());
@@ -228,9 +227,9 @@ mod tests {
     // (We can't test throw_irrecoverable since it exits the program)
     #[test]
     fn test_error_propagation_structure() {
-        let root = IrrevocableContext::new(&span_fixture());
-        let child = root.child();
-        let grandchild = child.child();
+        let root = IrrevocableContext::new(&span_fixture(), "test_error_propagation_root");
+        let child = root.child("error_prop_child");
+        let grandchild = child.child("error_prop_grandchild");
         
         // verify the parent chain exists
         assert!(grandchild.inner.parent.is_some());

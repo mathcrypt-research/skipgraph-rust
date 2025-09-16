@@ -239,7 +239,7 @@ impl BaseNode {
         let _enter = span.enter();
         
         // Create a cancelable context for this node
-        let ctx = IrrevocableContext::new(&span);
+        let ctx = IrrevocableContext::new(&span, "base_node_context");
         
         tracing::trace!(
             "creating BaseNode with id {:?}, mem_vec {:?}",
@@ -331,7 +331,7 @@ mod tests {
             lt: Box::new(ArrayLookupTable::new(&span)),
             net: Box::new(Unimock::new(())), // No expectations needed for direct struct construction
             span: span.clone(),
-            ctx: IrrevocableContext::new(&span),
+            ctx: IrrevocableContext::new(&span, "base_node_test_context"),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
