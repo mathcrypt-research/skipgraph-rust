@@ -20,20 +20,20 @@ use tracing::Span;
 /// When an irrecoverable error is thrown, it propagates up to the root context and terminates the program.
 /// Children automatically get cancelled when their parent is cancelled.
 #[derive(Clone)]
-pub struct CancelableContext {
+pub struct IrrevocableContext {
     inner: Arc<ContextInner>,
 }
 
 struct ContextInner {
     token: CancellationToken,
-    parent: Option<CancelableContext>,
+    parent: Option<IrrevocableContext>,
     span: Span,
 }
 
-impl CancelableContext {
+impl IrrevocableContext {
     /// Create a new root context
     pub fn new(parent_span: &Span) -> Self {
-        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "cancelable_context");
+        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context");
         
         Self {
             inner: Arc::new(ContextInner {
@@ -46,7 +46,7 @@ impl CancelableContext {
 
     /// Create a child context that inherits cancellation from the parent
     pub fn child(&self) -> Self {
-        let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "cancelable_context_child");
+        let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "irrevocable_context_child");
         
         Self {
             inner: Arc::new(ContextInner {
@@ -125,9 +125,9 @@ impl CancelableContext {
 }
 
 // Custom Debug implementation for better visibility into the context state
-impl std::fmt::Debug for CancelableContext {
+impl std::fmt::Debug for IrrevocableContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CancelableContext")
+        f.debug_struct("IrrevocableContext")
             .field("is_cancelled", &self.is_cancelled())
             .field("has_parent", &self.inner.parent.is_some())
             .finish()
@@ -143,7 +143,7 @@ mod tests {
     // this test ensures that cancelling a context works as expected
     #[tokio::test]
     async fn test_basic_cancellation() {
-        let ctx = CancelableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture());
         
         assert!(!ctx.is_cancelled());
         ctx.cancel();
@@ -153,7 +153,7 @@ mod tests {
     // this test ensures that cancelling a parent context cancels its children
     #[tokio::test]
     async fn test_child_cancellation() {
-        let parent = CancelableContext::new(&span_fixture());
+        let parent = IrrevocableContext::new(&span_fixture());
         let child = parent.child();
         
         assert!(!child.is_cancelled());
@@ -167,7 +167,7 @@ mod tests {
     // this test ensures that running an operation completes successfully if its context is not canceled
     #[tokio::test]
     async fn test_successful_operation() {
-        let ctx = CancelableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture());
 
         let result = ctx.run(async {
             Ok::<i32, anyhow::Error>(42)
@@ -181,7 +181,7 @@ mod tests {
     // the operation should not complete if the context is canceled
     #[tokio::test]
     async fn test_run_with_cancellation() {
-        let ctx = CancelableContext::new(&span_fixture());
+        let ctx = IrrevocableContext::new(&span_fixture());
         
         // Cancel the context
         ctx.cancel();
@@ -206,7 +206,7 @@ mod tests {
     // this test ensures that nested child contexts are canceled when the root context is canceled
     #[tokio::test]
     async fn test_nested_children() {
-        let root = CancelableContext::new(&span_fixture());
+        let root = IrrevocableContext::new(&span_fixture());
         let child1 = root.child();
         let child2 = child1.child();
         let grandchild = child2.child();
@@ -228,7 +228,7 @@ mod tests {
     // (We can't test throw_irrecoverable since it exits the program)
     #[test]
     fn test_error_propagation_structure() {
-        let root = CancelableContext::new(&span_fixture());
+        let root = IrrevocableContext::new(&span_fixture());
         let child = root.child();
         let grandchild = child.child();
         
