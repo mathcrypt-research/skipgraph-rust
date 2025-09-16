@@ -10,8 +10,8 @@ use tracing::Span;
 
 /// Example: Basic cancellation usage
 pub async fn basic_cancellation_example(parent_span: &Span) -> Result<()> {
-    let ctx = IrrevocableContext::new(parent_span);
-    let child_ctx = ctx.child();
+    let ctx = IrrevocableContext::new(parent_span, "basic_cancellation_example");
+    let child_ctx = ctx.child("worker_task");
     
     // Spawn background work with child context
     // this will start in a separate thread
@@ -63,7 +63,7 @@ pub async fn basic_cancellation_example(parent_span: &Span) -> Result<()> {
 /// All operations are critical - if any fail, the program should terminate
 /// In this example, all operations succeed for demonstration purposes
 pub async fn startup_example(parent_span: &Span) -> Result<()> {
-    let ctx = IrrevocableContext::new(parent_span);
+    let ctx = IrrevocableContext::new(parent_span, "startup_example");
     
     let startup_operations = vec![
         "initialize_network",
@@ -85,9 +85,9 @@ pub async fn startup_example(parent_span: &Span) -> Result<()> {
 
 /// Example: Hierarchical cancellation
 pub async fn hierarchical_cancellation_example(parent_span: &Span) -> Result<()> {
-    let root_ctx = IrrevocableContext::new(parent_span);
-    let service1_ctx = root_ctx.child();
-    let service2_ctx = root_ctx.child();
+    let root_ctx = IrrevocableContext::new(parent_span, "hierarchical_cancellation_example");
+    let service1_ctx = root_ctx.child("service1");
+    let service2_ctx = root_ctx.child("service2");
     
     // Spawn multiple services
     let service1_handle = tokio::spawn({
@@ -143,9 +143,9 @@ pub async fn hierarchical_cancellation_example(parent_span: &Span) -> Result<()>
 
 /// Example: Error propagation pattern
 pub async fn error_propagation_example(parent_span: &Span) -> Result<()> {
-    let root_ctx = IrrevocableContext::new(parent_span);
-    let child_ctx = root_ctx.child();
-    let _grandchild_ctx = child_ctx.child();
+    let root_ctx = IrrevocableContext::new(parent_span, "error_propagation_example");
+    let child_ctx = root_ctx.child("child_context");
+    let _grandchild_ctx = child_ctx.child("grandchild_context");
     
     // Simulate a critical error in deeply nested operation
     let critical_error = anyhow!("Critical database connection failed");
