@@ -19,7 +19,6 @@ use tracing::Span;
 /// 
 /// When an irrecoverable error is thrown, it propagates up to the root context and terminates the program.
 /// Children automatically get cancelled when their parent is cancelled.
-#[derive(Clone)]
 pub struct IrrevocableContext {
     inner: Arc<ContextInner>,
 }
@@ -129,6 +128,20 @@ impl std::fmt::Debug for IrrevocableContext {
             .field("is_cancelled", &self.is_cancelled())
             .field("has_parent", &self.inner.parent.is_some())
             .finish()
+    }
+}
+
+/// Custom Clone implementation to ensure shallow cloning behavior.
+/// This implementation explicitly controls cloning to ensure that:
+/// - Only Arc pointer is cloned (shallow), not the underlying data
+/// - If future changes add non-shallow-clonable fields, this implementation
+///   must be updated to maintain the shallow cloning semantics
+impl Clone for IrrevocableContext {
+    fn clone(&self) -> Self {
+        // Shallow clone: cloned instances share the same underlying data via Arc
+        IrrevocableContext {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
