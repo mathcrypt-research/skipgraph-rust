@@ -64,8 +64,8 @@ impl IrrevocableContext {
         self.inner.token.cancel();
     }
 
-    /// Check if the context is cancelled (non-blocking)
-    pub fn is_cancelled(&self) -> bool {
+    /// Check if the context is cancelled (non-blocking, private)
+    fn is_cancelled(&self) -> bool {
         self.inner.token.is_cancelled()
     }
 
