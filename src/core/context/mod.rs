@@ -64,11 +64,6 @@ impl IrrevocableContext {
         self.inner.token.cancel();
     }
 
-    /// Check if the context is cancelled (non-blocking)
-    pub fn is_cancelled(&self) -> bool {
-        self.inner.token.is_cancelled()
-    }
-
     /// Wait for the context to be cancelled (async)
     pub async fn cancelled(&self) {
         self.inner.token.cancelled().await;
