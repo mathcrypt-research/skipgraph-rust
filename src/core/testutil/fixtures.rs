@@ -538,3 +538,63 @@ mod test {
         );
     }
 }
+
+/// Waits until a condition becomes true within a specified timeout period.
+/// This utility is designed for testing scenarios where you need to verify that
+/// some asynchronous behavior occurs within a reasonable time frame.
+///
+/// Uses a channel-based approach with cooperative
+/// scheduling via `yield_now()` to be CPU-friendly while maintaining responsiveness.
+///
+/// # Arguments
+/// * `condition` - A closure that returns true when the expected condition is met
+/// * `timeout` - Maximum time to wait for the condition to become true
+///
+/// # Returns
+/// * `Ok(())` if the condition becomes true within the timeout
+/// * `Err(String)` if the timeout is exceeded before the condition is met
+///
+/// # Example
+/// ```ignore
+/// // Wait for a context to be cancelled within 100ms
+/// wait_until(
+///     || context.is_cancelled(),
+///     Duration::from_millis(100)
+/// ).await.expect("context should be cancelled within 100ms");
+/// ```
+pub async fn wait_until<F>(
+    mut condition: F,
+    timeout: Duration,
+) -> Result<(), String>
+where
+    F: FnMut() -> bool + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+
+    // Spawn a single task that polls the condition and sends the result
+    let condition_task = tokio::task::spawn_blocking(move || {
+        loop {
+            if condition() {
+                // Condition met - send success and return
+                if tx.send(Ok(())).is_err() {
+                    // Receiver dropped, but we're done anyway
+                }
+                return;
+            }
+            // Cooperative scheduling - yield to other threads
+            std::thread::yield_now();
+        }
+    });
+
+    // Wait for the result with timeout
+    let result = match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("channel closed unexpectedly".to_string()),
+        Err(_) => Err(format!("condition not met within timeout of {:?}", timeout)),
+    };
+
+    // Clean up the task if it's still running
+    condition_task.abort();
+
+    result
+}
