@@ -148,7 +148,7 @@ impl Clone for IrrevocableContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::testutil::fixtures::span_fixture;
+    use crate::core::testutil::fixtures::{span_fixture, wait_until};
     use tokio::time::{sleep, Duration};
 
     /// this test ensures that cancelling a context works as expected
@@ -169,10 +169,13 @@ mod tests {
         
         assert!(!child.is_cancelled());
         parent.cancel(); // Cancel parent
-        
-        // Small delay for propagation
-        sleep(Duration::from_millis(1)).await;
-        assert!(child.is_cancelled());
+
+        // Wait for cancellation to propagate
+        let child_clone = child.clone();
+        wait_until(
+            move || child_clone.is_cancelled(),
+            Duration::from_millis(100)
+        ).await.expect("child context should be cancelled within 100ms");
     }
 
     /// this test ensures that running an operation completes successfully if its context is not canceled
@@ -196,9 +199,13 @@ mod tests {
         
         // Cancel the context
         ctx.cancel();
-        
-        // Small delay to ensure cancellation is processed
-        sleep(Duration::from_millis(1)).await;
+
+        // Wait for cancellation to be processed
+        let ctx_clone = ctx.clone();
+        wait_until(
+            move || ctx_clone.is_cancelled(),
+            Duration::from_millis(100)
+        ).await.expect("context should be cancelled within 100ms");
         
         let result = ctx.run(async {
             // This should not execute due to cancellation
@@ -227,12 +234,15 @@ mod tests {
         
         // Cancel root - should propagate to all children
         root.cancel();
-        sleep(Duration::from_millis(1)).await;
 
-        // All children contexts should now be cancelled
-        assert!(child1.is_cancelled());
-        assert!(child2.is_cancelled());
-        assert!(grandchild.is_cancelled());
+        // Wait for cancellation to propagate to all children
+        let child1_clone = child1.clone();
+        let child2_clone = child2.clone();
+        let grandchild_clone = grandchild.clone();
+        wait_until(
+            move || child1_clone.is_cancelled() && child2_clone.is_cancelled() && grandchild_clone.is_cancelled(),
+            Duration::from_millis(100)
+        ).await.expect("all child contexts should be cancelled within 100ms");
     }
 
     /// Test that we can create the error propagation hierarchy
