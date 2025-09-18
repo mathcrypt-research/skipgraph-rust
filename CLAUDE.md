@@ -110,6 +110,55 @@ impl Clone for Box<dyn LogicTrait> {
 
 **Why Not Copy**: Copy requires all fields to be Copy, doesn't work with trait objects, and semantically implies independent data rather than shared ownership.
 
+### Explicit Clone Implementation for Future-Proof Shallow Cloning
+
+**Principle**: For logic-handling structures that use shallow cloning, implement `Clone` explicitly rather than deriving it. This prevents accidental deep cloning if future changes introduce non-shallow-clonable fields.
+
+**Implementation Pattern**:
+```rust
+// GOOD: Explicit Clone implementation
+pub struct LogicStruct {
+    inner: Arc<RwLock<InnerState>>,
+    // If future changes add fields that shouldn't be deep cloned,
+    // this implementation will need explicit updating
+}
+
+// Remove #[derive(Clone)] and implement manually
+impl Clone for LogicStruct {
+    fn clone(&self) -> Self {
+        // Shallow clone: cloned instances share the same underlying data via Arc
+        // This comment makes the intent explicit and serves as a reminder
+        // for future maintainers
+        LogicStruct {
+            inner: Arc::clone(&self.inner),
+            // Any new fields added here must maintain shallow cloning semantics
+        }
+    }
+}
+```
+
+**Avoid Pattern**:
+```rust
+// AVOID: Derived Clone that may become deep cloning
+#[derive(Clone)]  // Dangerous if future fields are added
+pub struct LogicStruct {
+    inner: Arc<RwLock<InnerState>>,
+}
+```
+
+**Benefits**:
+- **Future-proof**: Adding new fields requires explicit decision about cloning behavior
+- **Intent clarity**: Makes shallow cloning semantics explicit in code
+- **Compile-time safety**: Non-clonable fields will cause compilation errors, forcing deliberate handling
+- **Documentation**: Comments explain the shallow cloning contract
+
+**Reference Implementation**: See `IrrevocableContext` in `src/core/context/mod.rs`
+
+**When to Apply**:
+- All logic-handling structures using Arc-based shared state
+- Structures where shallow cloning semantics are critical to correctness
+- Types that may evolve to include complex state in the future
+
 ### Internal Thread Safety Pattern
 
 **Principle**: Prefer internal thread safety over external mutual exclusion. Structures should be internally thread-safe using Arc<RwLock<T>> patterns rather than requiring external Arc<Mutex<T>> wrapping.

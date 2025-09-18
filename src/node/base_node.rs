@@ -1,6 +1,6 @@
 use crate::core::model::direction::Direction;
 use crate::core::{
-    Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector,
+    IrrevocableContext, Identifier, IdSearchReq, IdSearchRes, LookupTable, MembershipVector,
 };
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
@@ -21,6 +21,7 @@ pub(crate) struct BaseNode {
     lt: Box<dyn LookupTable>,
     net: Box<dyn Network>,
     span: Span,
+    ctx: IrrevocableContext,
 }
 
 impl Node for BaseNode {
@@ -231,6 +232,9 @@ impl BaseNode {
         let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "base_node");
         let _enter = span.enter();
         
+        // Create a cancelable context for this node
+        let ctx = IrrevocableContext::new(&span, "base_node_context");
+        
         tracing::trace!(
             "creating BaseNode with id {:?}, mem_vec {:?}",
             id,
@@ -243,6 +247,7 @@ impl BaseNode {
             lt,
             net,
             span: span.clone(),
+            ctx,
         };
 
         // Create a MessageProcessor from this node, instead of casting directly
@@ -253,9 +258,11 @@ impl BaseNode {
             id
         );
 
-        clone_net
-            .register_processor(processor)
-            .map_err(|e| anyhow!("could not register node in network: {}", e))?;
+        // Use throw_irrecoverable for critical startup failures
+        if let Err(e) = clone_net.register_processor(processor) {
+            let error = anyhow!("could not register node in network: {}", e);
+            node.ctx.throw_irrecoverable(error);
+        }
 
         tracing::trace!(
             "successfully created and registered BaseNode {:?}",
@@ -272,7 +279,7 @@ impl BaseNode {
 impl PartialEq for BaseNode {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.mem_vec == other.mem_vec
-        // ignore lt for equality check as comparing trait objects is non-trivial
+        // ignore lt and ctx for equality check as comparing trait objects is non-trivial
     }
 }
 
@@ -293,6 +300,7 @@ impl Clone for BaseNode {
             lt: self.lt.clone(),
             net: self.net.clone(),
             span: self.span.clone(),
+            ctx: self.ctx.clone(),
         }
     }
 }
@@ -310,12 +318,14 @@ mod tests {
     fn test_base_node() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
+        let span = span_fixture();
         let node = BaseNode {
             id,
             mem_vec,
-            lt: Box::new(ArrayLookupTable::new(&span_fixture())),
+            lt: Box::new(ArrayLookupTable::new(&span)),
             net: Box::new(Unimock::new(())), // No expectations needed for direct struct construction
-            span: span_fixture(),
+            span: span.clone(),
+            ctx: IrrevocableContext::new(&span, "base_node_test_context"),
         };
         assert_eq!(node.get_identifier(), &id);
         assert_eq!(node.get_membership_vector(), &mem_vec);
