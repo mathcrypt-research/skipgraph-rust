@@ -218,12 +218,6 @@ impl EventProcessorCore for BaseNode {
 }
 
 impl BaseNode {
-    /// Get a reference to the cancelable context for this node.
-    #[allow(dead_code)] // for now, but should remove it in the future
-    pub fn context(&self) -> &IrrevocableContext {
-        &self.ctx
-    }
-
     /// Create a new `BaseNode` with the provided identifier, membership vector
     /// and lookup table.
     #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
