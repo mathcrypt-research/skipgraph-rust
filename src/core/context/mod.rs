@@ -8,8 +8,6 @@
 //! Unlike the full Go context API, this implementation focuses only on the core
 //! functionality needed: cancellation and error propagation.
 
-pub mod examples;
-
 #[cfg(test)]
 mod context_test;
 
