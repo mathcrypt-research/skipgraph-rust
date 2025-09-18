@@ -252,7 +252,6 @@ mod tests {
     }
 
     /// Test that we can create the error propagation hierarchy
-    /// (We can't test throw_irrecoverable since it exits the program)
     #[test]
     fn test_error_propagation_structure() {
         let root = IrrevocableContext::new(&span_fixture(), "test_error_propagation_root");
@@ -260,10 +259,34 @@ mod tests {
         let grandchild = child.child("error_prop_grandchild");
 
         grandchild.cancel();
-        
+
         // verify the parent chain exists
         assert!(grandchild.inner.parent.is_some());
         assert!(child.inner.parent.is_some());
         assert!(root.inner.parent.is_none());
+    }
+
+    /// Test that throw_irrecoverable properly panics when called
+    #[test]
+    fn test_throw_irrecoverable_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let root = IrrevocableContext::new(&span_fixture(), "test_throw_root");
+            let child = root.child("test_throw_child");
+
+            // This should panic with the irrecoverable error message
+            child.throw_irrecoverable(anyhow::anyhow!("test irrecoverable error"));
+        });
+
+        // Verify that a panic occurred
+        assert!(result.is_err());
+
+        // Verify the panic message contains our error
+        if let Err(panic_payload) = result {
+            if let Some(panic_msg) = panic_payload.downcast_ref::<String>() {
+                assert_eq!(panic_msg, "irrecoverable error: test irrecoverable error");
+            } else{
+                panic!("unexpected panic payload type");   
+            }
+        }
     }
 }
