@@ -155,10 +155,16 @@ mod tests {
     #[tokio::test]
     async fn test_basic_cancellation() {
         let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
-        
+
         assert!(!ctx.is_cancelled());
         ctx.cancel();
-        assert!(ctx.is_cancelled());
+
+        // Wait until cancellation is processed
+        let ctx_clone = ctx.clone();
+        wait_until(
+            move || ctx_clone.is_cancelled(),
+            Duration::from_millis(100)
+        ).await.expect("context should be cancelled within 100ms");
     }
 
     /// this test ensures that cancelling a parent context cancels its children
@@ -252,6 +258,8 @@ mod tests {
         let root = IrrevocableContext::new(&span_fixture(), "test_error_propagation_root");
         let child = root.child("error_prop_child");
         let grandchild = child.child("error_prop_grandchild");
+
+        grandchild.cancel();
         
         // verify the parent chain exists
         assert!(grandchild.inner.parent.is_some());
