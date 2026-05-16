@@ -20,3 +20,6 @@
 - PR title: same format; no description or labels—maintainers handle that.
 - Explain new/updated tests with doc comments.
 - Update documentation and `README.md` for any changes.
+
+## Linting Instructions
+- Use `make lint` to run linting, fix all linting issues before committing.

@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Rust implementation of Skip Graphs - a distributed data structure for efficient P2P network operations. The project is structured as a library crate with core algorithms, local implementations, and testing infrastructure.
 
+## References
+
+- `skip-graphs-paper.pdf` (Aspnes & Shah) — canonical algorithms: search (Algorithm 1, p.6), insert/join (Algorithm 2, p.8), delete (Algorithm 3, p.8).
+
 ## Architecture
 
 The codebase is organized into three main modules:
@@ -321,25 +325,15 @@ panic!("Invalid state: expected Some but got None");
 
 **Enforcement**: This style is mandatory for all new code and should be applied when modifying existing error handling.
 
-### Deprecated Clone for Copy Types Pattern
+### Implicit Copying for Copy Types
 
-**Principle**: All fixed-size types with fixed-size fields should derive `Copy` but implement `Clone` manually with deprecation warnings to encourage implicit copying over explicit `.clone()` calls.
+**Principle**: All fixed-size types with fixed-size fields should derive both `Copy` and `Clone` via `#[derive(...)]`. Explicit `.clone()` calls on Copy types are forbidden by lint — prefer implicit copying.
 
 **Implementation Pattern**:
 ```rust
-// Remove Clone from derive, keep Copy
-#[derive(Copy, Debug, PartialEq)]  
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FixedSizeType {
     field: [u8; 32],  // fixed-size field
-}
-
-// Implement Clone manually with deprecation
-#[allow(useless_deprecated)]
-impl Clone for FixedSizeType {
-    #[deprecated(note = "This type is Copy; prefer implicit copying instead of .clone()")]
-    fn clone(&self) -> Self {
-        *self
-    }
 }
 ```
 
@@ -348,18 +342,6 @@ impl Clone for FixedSizeType {
 - All fields are also fixed-size (no heap allocations, no dynamic data)
 - Examples: byte arrays, primitive types, fixed-size structs, simple enums
 
-**Benefits**:
-- **Performance**: Encourages implicit copying which is more efficient
-- **API Guidance**: Provides clear feedback to developers about preferred patterns
-- **Consistency**: Maintains uniform approach across all fixed-size types
-- **Safety**: Copy types cannot have destructors, ensuring predictable behavior
-
 **Reference Implementation**: See core model types like `Identifier`, `MembershipVector`, `Direction`, `Address`, `Identity` in `src/core/model/`
 
-**Enforcement**: This pattern is enforced by dual mechanisms in the linter configuration:
-- **`-D deprecated`**: Makes builds fail when deprecated methods (like our deprecated Clone implementations) are used
-- **`-D warnings` (clippy::clone_on_copy)**: Catches explicit `.clone()` calls on Copy types as a fallback
-
-Since Clone is manually implemented with `#[deprecated]` on all Copy types, the `-D deprecated` flag ensures builds fail when `.clone()` is called, forcing developers to use implicit copying instead.
-
-**Note**: The `#[allow(useless_deprecated)]` attribute is required to bypass Rust's lint that would otherwise prevent this pattern from compiling.
+**Enforcement**: `make lint` runs `cargo clippy ... -D warnings`, which promotes `clippy::clone_on_copy` to a hard error. Any explicit `.clone()` on a Copy type fails the build, forcing developers to use implicit copying instead. (`Copy` requires `Clone` as a supertrait, so the derive must include both — it's the *call* that's forbidden, not the trait impl.)
