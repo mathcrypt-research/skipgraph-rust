@@ -47,7 +47,7 @@ fn test_identity_debug_shows_hex_format_for_components() {
     assert_eq!(
         debug_output,
         format!(
-            "Identity {{ id: {}, mem_vec: {}, address: Address {{ host: localhost, port: 8080 }} }}",
+            "Identity {{ id: {}, mem_vec: {}, address: localhost:8080 }}",
             expected_id_hex, expected_mem_vec_hex
         )
     );
@@ -56,7 +56,7 @@ fn test_identity_debug_shows_hex_format_for_components() {
     "Identity { \
     id: 450b67668d4ba6800374280766d3042c1aea22961563ecd88e7446218f85ae53, \
     mem_vec: 514dc05281ad57e0e9b58664aa973b1bf150602e36eb391f610e88c33f659df0, \
-    address: Address { host: localhost, port: 8080 } \
+    address: localhost:8080 \
     }");
 
 }

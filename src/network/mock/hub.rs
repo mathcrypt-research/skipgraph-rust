@@ -1,9 +1,9 @@
 use crate::core::Identifier;
 use crate::network::mock::network::MockNetwork;
-use crate::network::{Event};
-use anyhow::{anyhow, Context};
-use std::collections::HashMap;
+use crate::network::Event;
+use anyhow::anyhow;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// NetworkHub is a central hub that manages multiple mock networks.
@@ -43,18 +43,21 @@ impl NetworkHub {
 
     // TODO: route_event should be a closure that embeds the origin_id.
     /// Routes an event to the appropriate mock network based on the target node identifier.
-    pub fn route_event(&self, origin_id: Identifier, target_id: Identifier, event: Event) -> anyhow::Result<()> {
+    pub fn route_event(
+        &self,
+        origin_id: Identifier,
+        target_id: Identifier,
+        event: Event,
+    ) -> anyhow::Result<()> {
         let networks = self.networks.read();
 
         if let Some(network) = networks.get(&target_id) {
             network
                 .incoming_event(origin_id, event)
-                .context("failed to send event through network")?;
+                .map_err(|e| anyhow!("hub failed to process routing event: {}", e))?;
             Ok(())
         } else {
-            Err(anyhow!(
-                "network with identifier {} not found", target_id
-            ))
+            Err(anyhow!("network with identifier {} not found", target_id))
         }
     }
 }
