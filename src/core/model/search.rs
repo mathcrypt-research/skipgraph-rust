@@ -4,15 +4,17 @@ use crate::core::Identifier;
 
 #[derive(Debug, Copy, Clone)]
 pub struct IdSearchReq {
-    pub target: Identifier,
-    pub level: LookupTableLevel,
-    pub direction: Direction,
+    target: Identifier,
+    origin: Identifier,
+    level: LookupTableLevel,
+    direction: Direction,
 }
 
 impl IdSearchReq {
-    pub fn new(target: Identifier, level: LookupTableLevel, direction: Direction) -> Self {
+    pub fn new(origin: Identifier, target: Identifier, level: LookupTableLevel, direction: Direction) -> Self {
         IdSearchReq {
             target,
+            origin,
             level,
             direction,
         }
@@ -28,6 +30,10 @@ impl IdSearchReq {
 
     pub fn direction(&self) -> Direction {
         self.direction
+    }
+
+    pub fn origin(&self) -> &Identifier {
+        &self.origin
     }
 }
 

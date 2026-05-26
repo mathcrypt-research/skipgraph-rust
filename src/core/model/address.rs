@@ -1,7 +1,8 @@
+use std::fmt::Debug;
 use fixedstr::{str128, str8};
 
 /// Represents a networking address; composed of host + port
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Address {
     host: str128, // up to 128 bytes (on stack)
     port: str8,   // up to 8 bytes (on stack)
@@ -24,6 +25,18 @@ impl Address {
     /// Get the port
     pub fn port(&self) -> &str {
         self.port.as_str()
+    }
+}
+
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host(), self.port())
+    }
+}
+
+impl Debug for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
     }
 }
 

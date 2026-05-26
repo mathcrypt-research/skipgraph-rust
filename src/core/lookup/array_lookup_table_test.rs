@@ -9,7 +9,7 @@ mod tests {
     #[test]
     /// A new lookup table should be empty.
     fn test_lookup_table_empty() {
-        let lt: ArrayLookupTable = ArrayLookupTable::new(&span_fixture());
+        let lt: ArrayLookupTable = ArrayLookupTable::new();
         for i in 0..model::IDENTIFIER_SIZE_BYTES {
             assert_eq!(None, lt.get_entry(i, Direction::Left).unwrap());
             assert_eq!(None, lt.get_entry(i, Direction::Right).unwrap());
@@ -21,7 +21,7 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then get them.
     /// The test will also try to get an entry at level 2, which should return an error.
     fn test_lookup_table_update_get() {
-        let lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new();
         let id1 = random_identity();
         let id2 = random_identity();
 
@@ -38,7 +38,7 @@ mod tests {
     /// The test will update the entries at level 0 and 1, and then remove them.
     /// The test will then try to get the removed entries, which should return None.
     fn test_lookup_table_remove() {
-        let lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new();
         let id1 = random_identity();
         let id2 = random_identity();
 
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     /// Test updating entries at out-of-bound levels.
     fn test_lookup_table_out_of_bound() {
-        let lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new();
         let id = random_identity();
 
         let result = lt.update_entry(id, LOOKUP_TABLE_LEVELS, Direction::Left);
@@ -82,7 +82,7 @@ mod tests {
     /// The test will update the entry at level 0, then update it again with a different identity.
     /// The test will then get the entry at level 0, which should return the second identity.
     fn test_lookup_table_override() {
-        let lt = ArrayLookupTable::new(&span_fixture());
+        let lt = ArrayLookupTable::new();
         let id1 = random_identity();
         let id2 = random_identity();
 
@@ -119,7 +119,7 @@ mod tests {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
-        let lt = Arc::new(ArrayLookupTable::new(&span_fixture()));
+        let lt = Arc::new(ArrayLookupTable::new());
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
@@ -179,7 +179,7 @@ mod tests {
 
         // Generate 20 random identities; 10 for left and 10 for right.
         // The i index is the "left" entry at level i + 10 is the "right" entry at level i.
-        let lt = Arc::new(ArrayLookupTable::new(&span_fixture()));
+        let lt = Arc::new(ArrayLookupTable::new());
         let levels = 10;
         let identities = random_identities(2 * levels);
 
@@ -253,7 +253,7 @@ mod tests {
         // This data structure must be atomic as a read from both must be done atomically as well
         // as a write to both.
         let shared_context = Arc::new(Mutex::new((
-            ArrayLookupTable::new(&span_fixture()),
+            ArrayLookupTable::new(),
             HashMap::<(usize, Direction), Identity>::new(),
         )));
 
@@ -371,7 +371,7 @@ mod tests {
     /// Changes made to one instance should be visible in the cloned instance.
     #[test]
     fn test_shallow_clone() {
-        let lt1 = ArrayLookupTable::new(&span_fixture());
+        let lt1 = ArrayLookupTable::new();
         let id1 = random_identity();
 
         // Clone the lookup table
@@ -408,7 +408,7 @@ mod tests {
     /// This ensures the clone_box method provides the same shallow cloning behavior.
     #[test]
     fn test_trait_object_shallow_clone() {
-        let lt1: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new(&span_fixture()));
+        let lt1: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new());
         let id1 = random_identity();
 
         // Clone via trait object

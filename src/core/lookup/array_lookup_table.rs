@@ -3,10 +3,9 @@ use crate::core::model;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use anyhow::anyhow;
-use std::fmt::{Debug, Formatter};
 use parking_lot::RwLock;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-use tracing::{Level, Span};
 
 /// The number of levels in the lookup table is determined by the size of the identifier in bits (that is
 /// `IDENTIFIER_SIZE_BYTES * 8`).
@@ -16,7 +15,6 @@ pub const LOOKUP_TABLE_LEVELS: usize = model::IDENTIFIER_SIZE_BYTES * 8;
 /// Uses Arc for shallow cloning - cloned instances share the same underlying data.
 pub struct ArrayLookupTable {
     inner: Arc<RwLock<InnerArrayLookupTable>>,
-    span: Span,
 }
 
 struct InnerArrayLookupTable {
@@ -26,15 +24,12 @@ struct InnerArrayLookupTable {
 
 impl ArrayLookupTable {
     /// Create a new empty LookupTable instance.
-    pub fn new(parent_span: &Span) -> ArrayLookupTable {
-        let span = tracing::span!(parent: parent_span, Level::INFO, "array_lookup_table");
-
+    pub fn new() -> ArrayLookupTable {
         ArrayLookupTable {
             inner: Arc::new(RwLock::new(InnerArrayLookupTable {
                 left: vec![None; LOOKUP_TABLE_LEVELS],
                 right: vec![None; LOOKUP_TABLE_LEVELS],
             })),
-            span,
         }
     }
 }
@@ -44,7 +39,6 @@ impl Clone for ArrayLookupTable {
         // Shallow clone: cloned instances share the same underlying data via Arc
         ArrayLookupTable {
             inner: Arc::clone(&self.inner),
-            span: self.span.clone(),
         }
     }
 }
@@ -57,6 +51,12 @@ impl Debug for ArrayLookupTable {
             writeln!(f, "Level: {i}, Left: {l:?}, Right: {r:?}")?;
         }
         write!(f, "}}")
+    }
+}
+
+impl Default for ArrayLookupTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -87,13 +87,7 @@ impl LookupTable for ArrayLookupTable {
         }
 
         // Log the update operation
-        let _enter = self.span.enter();
-        tracing::trace!(
-            "updated entry at level {} in direction {:?} with identity {:?}",
-            level,
-            direction,
-            identity
-        );
+        tracing::trace!("lookup table entry updated: level {}, direction {}, identifier {}", level, direction, identity.id());
         Ok(())
     }
 
@@ -124,7 +118,6 @@ impl LookupTable for ArrayLookupTable {
         }
 
         // Log the remove operation
-        let _enter = self.span.enter();
         tracing::trace!(
             "removed entry at level {} in direction {:?}: {:?}",
             level,
@@ -158,7 +151,6 @@ impl LookupTable for ArrayLookupTable {
         };
 
         // Log the get operation
-        let _enter = self.span.enter();
         tracing::trace!(
             "get entry at level {} in direction {:?}: {:?}",
             level,
@@ -234,5 +226,3 @@ impl PartialEq for ArrayLookupTable {
         self.equal(other)
     }
 }
-
-
