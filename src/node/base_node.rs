@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::core::{IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, MembershipVector};
-use crate::network::Event::{IdSearchRequest, IdSearchResponse};
+use crate::network::Event::{SearchByIdRequest, SearchByIdResponse};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
 use crate::network::{Event, EventProcessorCore, Network};
@@ -100,7 +100,7 @@ impl BaseNode {
             let mut request_id_map = self.request_id_map.lock().expect("mutex was poisoned by a previous panic");
             request_id_map.insert(req.req_id(), tx);
         }
-        let relay_request = IdSearchRequest(IdSearchReq::new(
+        let relay_request = SearchByIdRequest(IdSearchReq::new(
             req.req_id(),
             *self.core.id(),
             *req.target(),
@@ -129,7 +129,7 @@ impl EventProcessorCore for BaseNode {
         let _enter = self.span.enter();
 
         match event {
-            IdSearchRequest(req) => {
+            SearchByIdRequest(req) => {
                 let span = tracing::trace_span!(
                     "search_by_id_request",
                     origin = ?origin_id,
@@ -154,7 +154,7 @@ impl EventProcessorCore for BaseNode {
 
                 if res.result() == self.core.id() {
                     self.net
-                        .send_event(*req.origin(), IdSearchResponse(res))
+                        .send_event(*req.origin(), SearchByIdResponse(res))
                         .map_err(|e| {
                             anyhow!("failed to send response event for search by id: {}", e)
                         })?;
@@ -162,7 +162,7 @@ impl EventProcessorCore for BaseNode {
                     return Ok(());
                 }
 
-                let relay_request = IdSearchRequest(IdSearchReq::new(
+                let relay_request = SearchByIdRequest(IdSearchReq::new(
                     req.req_id(),
                     *req.origin(),
                     *req.target(),
@@ -180,7 +180,7 @@ impl EventProcessorCore for BaseNode {
                 tracing::info!("relayed search by id request to the next node");
                 Ok(())
             }
-            IdSearchResponse(res) => {
+            SearchByIdResponse(res) => {
                 let span = tracing::trace_span!(
                     "search_by_id_response",
                     origin = ?origin_id,
