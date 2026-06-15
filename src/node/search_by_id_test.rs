@@ -35,7 +35,7 @@ fn test_search_by_id_networking_integration_relay() {
 
     let node_id = random_identifier();
     let search_request = IdSearchReq::new(RequestId::random(), node_id, target, 0, Direction::Left);
-    let request_event = Event::IdSearchRequest(search_request);
+    let request_event = Event::SearchByIdRequest(search_request);
 
     let (expected_lvl, expected_identity) = lt
         .left_neighbors()
@@ -53,7 +53,7 @@ fn test_search_by_id_networking_integration_relay() {
             .each_call(matching!(_))
             .answers_arc(Arc::new(
                 move |_, id: Identifier, event: Event| match event {
-                    Event::IdSearchRequest(req) => {
+                    Event::SearchByIdRequest(req) => {
                         assert_eq!(req.level(), expected_lvl);
                         assert_eq!(id, *expected_identity.id());
                         Ok(())
@@ -92,7 +92,7 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
     let node_id = random_identifier();
 
     let search_request = IdSearchReq::new(RequestId::random(), origin_id, node_id, 0, Direction::Left);
-    let request_event = Event::IdSearchRequest(search_request);
+    let request_event = Event::SearchByIdRequest(search_request);
 
     let mock_net = Unimock::new((
         NetworkMock::register_processor
@@ -102,7 +102,7 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
             .each_call(matching!(_))
             .answers_arc(Arc::new(
                 move |_, id: Identifier, event: Event| match event {
-                    Event::IdSearchResponse(res) => {
+                    Event::SearchByIdResponse(res) => {
                         assert_eq!(
                             id, origin_id,
                             "expected result to be to the originator's identifier"

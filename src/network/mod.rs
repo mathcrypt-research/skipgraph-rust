@@ -10,8 +10,8 @@ pub use processor::MessageProcessor;
 #[derive(Debug, Clone)]
 pub enum Event {
     TestMessage(String), // A payload for testing purposes, it is a simple string event, and is not used in production.
-    IdSearchRequest(IdSearchReq), // A payload representing an identifier search request.
-    IdSearchResponse(IdSearchRes) // A payload representing an identifier search response.
+    SearchByIdRequest(IdSearchReq), // A payload representing an identifier search request.
+    SearchByIdResponse(IdSearchRes) // A payload representing an identifier search response.
 }
 
 /// Core event processing logic that implementations must provide.
