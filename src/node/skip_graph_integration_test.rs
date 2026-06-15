@@ -1,10 +1,9 @@
 use super::base_node::BaseNode;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
-use crate::core::testutil::fixtures::{
-    random_membership_vector, random_sorted_identifiers, span_fixture,
-};
+use crate::core::testutil::fixtures::{join_all_with_timeout, join_with_timeout, random_membership_vector, random_sorted_identifiers, span_fixture};
 use crate::core::{Address, ArrayLookupTable, IdSearchReq, Identifier, LookupTable, MembershipVector, LOOKUP_TABLE_LEVELS};
+use crate::core::model::search::RequestId;
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Network;
 use crate::node::core::BaseCore;
@@ -162,11 +161,39 @@ fn test_skip_graph_edge_cases() {
 }
 
 #[test]
-fn test_skip_graph_join_search_by_id() {
+fn test_skip_graph_search_by_id() {
     let sg = LocalSkipGraph::new(8).expect("failed to initialize a local skip graph");
     let origin_node = sg.nodes[0].clone();
     let target_id = sg.identifiers[7];
-    let id_search_req = IdSearchReq::new(*origin_node.id(), target_id, LOOKUP_TABLE_LEVELS - 1, Direction::Right);
-    let result = origin_node.search_by_id(&id_search_req).expect("failed to search by id");
-    assert_eq!(*result.result(), target_id);
+
+    let handle = std::thread::spawn(move || {
+        let id_search_req = IdSearchReq::new(RequestId::random(), *origin_node.id(), target_id, LOOKUP_TABLE_LEVELS - 1, Direction::Right);
+        let result = origin_node.search_by_id(&id_search_req).expect("failed to search by id");
+        assert_eq!(*result.result(), target_id);
+    });
+
+    join_with_timeout(handle, std::time::Duration::from_secs(10))
+        .expect("search_by_id did not complete within timeout (likely deadlocked)");
 }
+
+#[test]
+fn test_skip_graph_search_by_id_concurrent() {
+    let sg = LocalSkipGraph::new(8).expect("failed to initialize a local skip graph");
+    let origin_node = sg.nodes[0].clone();
+
+    let mut handles = Vec::with_capacity(8);
+    for i in 0..8 {
+        let origin_node = origin_node.clone();
+        let target_id = sg.identifiers[i];
+        let handle = std::thread::spawn(move || {
+            let id_search_req = IdSearchReq::new(RequestId::random(), *origin_node.id(), target_id, LOOKUP_TABLE_LEVELS - 1, Direction::Right);
+            let result = origin_node.search_by_id(&id_search_req).expect("failed to search by id");
+            assert_eq!(*result.result(), target_id);
+        });
+        handles.push(handle);
+    }
+
+    join_all_with_timeout(handles.into_boxed_slice(), std::time::Duration::from_secs(10))
+        .expect("search_by_id did not complete within timeout (likely deadlocked)");
+}
+

@@ -10,6 +10,29 @@ network.
 This project provides a Rust-based implementation of Skip Graph middleware, suitable for building distributed systems requiring a P2P routing
 overlay or distributed key-value store.
 
+## Roadmap
+
+The canonical algorithms (search, insert/join, delete) follow Aspnes & Shah,
+[_Skip Graphs_](https://arxiv.org/pdf/cs.DS/0306043).
+
+### Implemented
+
+- **Core model** — `Identifier`, `MembershipVector`, `Direction`, `Address`, `Identity`.
+- **Lookup table** — `ArrayLookupTable` with shallow-clone (`Arc`-backed) semantics.
+- **Local search-by-id** — a single node resolving a target within its own lookup table (Algorithm 1).
+- **In-memory mock network** — `NetworkHub` + `MockNetwork` for exercising distributed scenarios without real transport.
+- **Distributed search-by-id** — end-to-end multi-hop forwarding of a search across nodes over the mock network.
+- **Concurrent originator searches** — a single node may have many in-flight searches at once, routed back to the correct caller via a per-request waiter map keyed by `RequestId`.
+- **Irrecoverable-error / cancellation context** — `IrrevocableContext` for surfacing unrecoverable failures.
+
+### Next
+
+- **Search-by-membership-vector** — currently a `todo!()` in `Core`.
+- **Node join (Algorithm 2)** — real `BaseNode::join`; today the test harness wires lookup tables manually.
+- **Node delete (Algorithm 3)** — graceful departure and neighbor repair.
+- **Production-ready node** — remove the `#[cfg(test)]` / `#[allow(dead_code)]` gating on `BaseNode`.
+- **Real network transport** — a concrete `Network` implementation to replace the mock.
+
 ## Prerequisites
 
 To use or contribute to this project, you need to have the following installed:

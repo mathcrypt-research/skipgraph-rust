@@ -146,7 +146,7 @@ impl Core for BaseCore {
 
         match result {
             Some((id, level)) => {
-                let search_result = IdSearchRes::new(*req.target(), level, id);
+                let search_result = IdSearchRes::new(req.req_id(), *req.target(), level, id);
                 tracing::trace!("search successful: found match {:?} at level {}", id, level);
                 Ok(search_result)
             }
@@ -157,7 +157,7 @@ impl Core for BaseCore {
                     "search fallback: no valid candidates found, returning own identifier {:?}",
                     self.id
                 );
-                Ok(IdSearchRes::new(*req.target(), 0, self.id))
+                Ok(IdSearchRes::new(req.req_id(), *req.target(), 0, self.id))
             }
         }
     }
