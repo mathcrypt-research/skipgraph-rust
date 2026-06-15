@@ -10,6 +10,7 @@ use crate::network::{Event, EventProcessorCore, NetworkMock};
 use crate::node::core::BaseCore;
 use std::sync::Arc;
 use unimock::*;
+use crate::core::model::search::RequestId;
 
 /// Verifies the node, acting as an `EventProcessor`, relays an
 /// `IdSearchRequest` event to the expected neighbor via the network.
@@ -33,7 +34,7 @@ fn test_search_by_id_networking_integration_relay() {
     .expect("failed to update entry in lookup table");
 
     let node_id = random_identifier();
-    let search_request = IdSearchReq::new(node_id, target, 0, Direction::Left);
+    let search_request = IdSearchReq::new(RequestId::random(), node_id, target, 0, Direction::Left);
     let request_event = Event::IdSearchRequest(search_request);
 
     let (expected_lvl, expected_identity) = lt
@@ -90,7 +91,7 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
     let origin_id = random_identifier();
     let node_id = random_identifier();
 
-    let search_request = IdSearchReq::new(origin_id, node_id, 0, Direction::Left);
+    let search_request = IdSearchReq::new(RequestId::random(), origin_id, node_id, 0, Direction::Left);
     let request_event = Event::IdSearchRequest(search_request);
 
     let mock_net = Unimock::new((

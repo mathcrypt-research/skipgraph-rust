@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::core::{IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, MembershipVector};
 use crate::network::Event::{IdSearchRequest, IdSearchResponse};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
@@ -10,6 +11,7 @@ use std::fmt::Formatter;
 use std::sync::mpsc::sync_channel;
 use std::sync::{mpsc::SyncSender, Arc, Mutex};
 use tracing::Span;
+use crate::core::model::search::RequestId;
 
 // TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
 #[allow(dead_code)]
@@ -25,7 +27,8 @@ pub(crate) struct BaseNode {
     net: Box<dyn Network>,
     span: Span,
     ctx: IrrevocableContext,
-    ch: Arc<Mutex<Option<SyncSender<IdSearchRes>>>>,
+    // map from request id to the sender end of the channel for the response
+    request_id_map: Arc<Mutex<HashMap<RequestId, SyncSender<IdSearchRes>>>>,
 }
 
 impl BaseNode {
@@ -49,7 +52,7 @@ impl BaseNode {
             net,
             span: span.clone(),
             ctx,
-            ch: Arc::new(Mutex::new(None)),
+            request_id_map: Arc::new(Mutex::new(HashMap::new())),
         };
 
         let processor = MessageProcessor::new(Box::new(node.clone()));
@@ -94,18 +97,20 @@ impl BaseNode {
 
         let (tx, rx) = sync_channel::<IdSearchRes>(1);
         {
-            let mut slot = self.ch.lock().expect("mutex was poisoned by a previous panic");
-            *slot = Some(tx);
+            let mut request_id_map = self.request_id_map.lock().expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(req.req_id(), tx);
         }
         let relay_request = IdSearchRequest(IdSearchReq::new(
+            req.req_id(),
             *self.core.id(),
             *req.target(),
             local_res.termination_level(),
             req.direction(),
         ));
-        self.net
-            .send_event(*local_res.result(), relay_request)
-            .map_err(|e| anyhow!("failed to send relay request for search by id: {}", e))?;
+        if let Err(e) = self.net.send_event(*local_res.result(), relay_request) {
+            self.request_id_map.lock().expect("mutex was poisoned by a previous panic").remove(&req.req_id());
+            return Err(anyhow!("failed to perform search by id {}", e));
+        }
         tracing::info!("relayed search by id request to the next node, pending response");
         let net_result = rx
             .recv()
@@ -157,7 +162,8 @@ impl EventProcessorCore for BaseNode {
                     return Ok(());
                 }
 
-                let relay_request = IdSearchRequest(crate::core::IdSearchReq::new(
+                let relay_request = IdSearchRequest(IdSearchReq::new(
+                    req.req_id(),
                     *req.origin(),
                     *req.target(),
                     res.termination_level(),
@@ -184,11 +190,10 @@ impl EventProcessorCore for BaseNode {
                 );
                 let _enter = span.enter();
 
-                let waiter = self
-                    .ch
+                let waiter = self.request_id_map
                     .lock()
                     .expect("mutex was poisoned by a previous panic")
-                    .take();
+                    .remove(&res.request_id());
                 if let Some(tx) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
@@ -231,7 +236,7 @@ impl Clone for BaseNode {
             net: self.net.clone(),
             span: self.span.clone(),
             ctx: self.ctx.clone(),
-            ch: self.ch.clone(),
+            request_id_map: self.request_id_map.clone(),
         }
     }
 }

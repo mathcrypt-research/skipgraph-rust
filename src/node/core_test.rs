@@ -12,6 +12,7 @@ use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
 use rand::Rng;
 use std::sync::Arc;
+use crate::core::model::search::RequestId;
 
 fn make_core(id: Identifier, lt: Box<dyn LookupTable>) -> BaseCore {
     BaseCore::new(span_fixture(), id, random_membership_vector(), lt)
@@ -32,7 +33,7 @@ fn test_search_by_id_singleton_fallback() {
     ];
 
     for (target, direction) in cases {
-        let req = IdSearchReq::new(origin_id, target, 3, direction);
+        let req = IdSearchReq::new(RequestId::random(), origin_id, target, 3, direction);
         let res = core.search_by_id(&req).expect("search failed");
         assert_eq!(res.termination_level(), 0);
         assert_eq!(*res.result(), origin_id);
@@ -59,7 +60,7 @@ fn test_search_by_id_found_left_direction() {
         .expect("failed to update entry in lookup table");
 
         let core = make_core(random_identifier(), Box::new(lt.clone()));
-        let req = IdSearchReq::new(*core.id(), target, lvl, Direction::Left);
+        let req = IdSearchReq::new(RequestId::random(), *core.id(), target, lvl, Direction::Left);
         let actual = core.search_by_id(&req).unwrap();
 
         let (expected_lvl, expected_identity) = lt
@@ -95,7 +96,7 @@ fn test_search_by_id_found_right_direction() {
         .expect("failed to update entry in lookup table");
 
         let core = make_core(random_identifier(), Box::new(lt.clone()));
-        let req = IdSearchReq::new(*core.id(), target, lvl, Direction::Right);
+        let req = IdSearchReq::new(RequestId::random(), *core.id(), target, lvl, Direction::Right);
         let actual = core.search_by_id(&req).unwrap();
 
         let (expected_lvl, expected_identity) = lt
@@ -133,7 +134,7 @@ fn test_search_by_id_not_found_left_direction() {
         }
 
         let core = make_core(random_identifier(), Box::new(lt.clone()));
-        let req = IdSearchReq::new(*core.id(), target, lvl, Direction::Left);
+        let req = IdSearchReq::new(RequestId::random(), *core.id(), target, lvl, Direction::Left);
         let actual = core.search_by_id(&req).unwrap();
 
         assert_eq!(actual.termination_level(), 0);
@@ -163,7 +164,7 @@ fn test_search_by_id_not_found_right_direction() {
         }
 
         let core = make_core(random_identifier(), Box::new(lt.clone()));
-        let req = IdSearchReq::new(*core.id(), target, lvl, Direction::Right);
+        let req = IdSearchReq::new(RequestId::random(), *core.id(), target, lvl, Direction::Right);
         let actual = core.search_by_id(&req).unwrap();
 
         assert_eq!(actual.termination_level(), 0);
@@ -182,7 +183,7 @@ fn test_search_by_id_exact_result() {
         for direction in [Direction::Left, Direction::Right] {
             let target_identity = lt.get_entry(lvl, direction).unwrap().unwrap();
             let target = target_identity.id();
-            let req = IdSearchReq::new(*core.id(), *target, lvl, direction);
+            let req = IdSearchReq::new(RequestId::random(), *core.id(), *target, lvl, direction);
             let actual = core.search_by_id(&req).unwrap();
 
             assert_eq!(actual.termination_level(), lvl);
@@ -211,7 +212,7 @@ fn test_search_by_id_concurrent_found_left_direction() {
         let handle = std::thread::spawn(move || {
             handle_barrier.wait();
             let lvl = rand::rng().random_range(0..LOOKUP_TABLE_LEVELS);
-            let req = IdSearchReq::new(*core_ref.id(), target, lvl, Direction::Left);
+            let req = IdSearchReq::new(RequestId::random(), *core_ref.id(), target, lvl, Direction::Left);
             let actual = core_ref.search_by_id(&req).unwrap();
 
             let expected = lt_clone
@@ -260,7 +261,7 @@ fn test_search_by_id_concurrent_right_direction() {
         let handle = std::thread::spawn(move || {
             handle_barrier.wait();
             let lvl = rand::rng().random_range(0..LOOKUP_TABLE_LEVELS);
-            let req = IdSearchReq::new(*core_ref.id(), target, lvl, Direction::Right);
+            let req = IdSearchReq::new(RequestId::random(), *core_ref.id(), target, lvl, Direction::Right);
             let actual = core_ref.search_by_id(&req).unwrap();
 
             let expected = lt_clone
@@ -336,7 +337,7 @@ fn test_search_by_id_error_propagation() {
     }
 
     let core = make_core(random_identifier(), Box::new(MockErrorLookupTable));
-    let req = IdSearchReq::new(*core.id(), random_identifier(), 3, Direction::Left);
+    let req = IdSearchReq::new(RequestId::random(), *core.id(), random_identifier(), 3, Direction::Left);
     let result = core.search_by_id(&req);
 
     assert!(
