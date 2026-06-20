@@ -1,9 +1,15 @@
 use super::base_node::BaseNode;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
-use crate::core::testutil::fixtures::{join_all_with_timeout, join_with_timeout, random_membership_vector, random_sorted_identifiers, span_fixture};
-use crate::core::{Address, ArrayLookupTable, IdSearchReq, Identifier, LookupTable, MembershipVector, LOOKUP_TABLE_LEVELS};
-use crate::core::model::search::RequestId;
+use crate::core::model::search::Nonce;
+use crate::core::testutil::fixtures::{
+    join_all_with_timeout, join_with_timeout, random_membership_vector, random_sorted_identifiers,
+    span_fixture,
+};
+use crate::core::{
+    Address, ArrayLookupTable, IdSearchReq, Identifier, LookupTable, MembershipVector,
+    LOOKUP_TABLE_LEVELS,
+};
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Network;
 use crate::node::core::BaseCore;
@@ -96,7 +102,7 @@ impl LocalSkipGraph {
             }
         }
 
-        let mvs = nodes.iter().map(|n| *n.mem_vec()).collect();
+        let mvs = nodes.iter().map(|n| n.mem_vec()).collect();
         Ok(LocalSkipGraph {
             nodes,
             lts,
@@ -118,13 +124,13 @@ fn test_lookup_tables_validity() {
             // find the max j < i: common_prefix_bit(m_i, m_j) ≥ level
             let expected_left: Option<usize> = (0..i)
                 .rev()
-                .find(|&j| sg.mvs[i].common_prefix_bit(&sg.mvs[j]) >= level);
+                .find(|&j| sg.mvs[i].common_prefix_bit(sg.mvs[j]) >= level);
 
-            let expected_left_neighbor_id = expected_left.map(|j| *sg.nodes[j].id());
+            let expected_left_neighbor_id = expected_left.map(|j| sg.nodes[j].id());
             let actual_left_neighbor_id = lt
                 .get_entry(level, Direction::Left)
                 .expect("get_entry should never error")
-                .map(|identity| *identity.id());
+                .map(|identity| identity.id());
             assert_eq!(
                 actual_left_neighbor_id, expected_left_neighbor_id,
                 "left lookup table entry is not valid"
@@ -132,12 +138,12 @@ fn test_lookup_tables_validity() {
 
             // find the min j > i: common_prefix_bit(m_i, m_j) >= level
             let expected_right: Option<usize> =
-                (i + 1..sg.nodes.len()).find(|&j| sg.mvs[i].common_prefix_bit(&sg.mvs[j]) >= level);
-            let expected_right_neighbor_id = expected_right.map(|j| *sg.nodes[j].id());
+                (i + 1..sg.nodes.len()).find(|&j| sg.mvs[i].common_prefix_bit(sg.mvs[j]) >= level);
+            let expected_right_neighbor_id = expected_right.map(|j| sg.nodes[j].id());
             let actual_right_neighbor_id = lt
                 .get_entry(level, Direction::Right)
                 .expect("get_entry should never error")
-                .map(|identity| *identity.id());
+                .map(|identity| identity.id());
             assert_eq!(
                 actual_right_neighbor_id, expected_right_neighbor_id,
                 "right lookup table entry is not valid"
@@ -167,9 +173,17 @@ fn test_skip_graph_search_by_id() {
     let target_id = sg.identifiers[7];
 
     let handle = std::thread::spawn(move || {
-        let id_search_req = IdSearchReq::new(RequestId::random(), *origin_node.id(), target_id, LOOKUP_TABLE_LEVELS - 1, Direction::Right);
-        let result = origin_node.search_by_id(&id_search_req).expect("failed to search by id");
-        assert_eq!(*result.result(), target_id);
+        let id_search_req = IdSearchReq {
+            nonce: Nonce::random(),
+            target: target_id,
+            origin: origin_node.id(),
+            level: LOOKUP_TABLE_LEVELS - 1,
+            direction: Direction::Right,
+        };
+        let result = origin_node
+            .search_by_id(id_search_req)
+            .expect("failed to search by id");
+        assert_eq!(result.result, target_id);
     });
 
     join_with_timeout(handle, std::time::Duration::from_secs(10))
@@ -186,14 +200,24 @@ fn test_skip_graph_search_by_id_concurrent() {
         let origin_node = origin_node.clone();
         let target_id = sg.identifiers[i];
         let handle = std::thread::spawn(move || {
-            let id_search_req = IdSearchReq::new(RequestId::random(), *origin_node.id(), target_id, LOOKUP_TABLE_LEVELS - 1, Direction::Right);
-            let result = origin_node.search_by_id(&id_search_req).expect("failed to search by id");
-            assert_eq!(*result.result(), target_id);
+            let id_search_req = IdSearchReq {
+                nonce: Nonce::random(),
+                target: target_id,
+                origin: origin_node.id(),
+                level: LOOKUP_TABLE_LEVELS - 1,
+                direction: Direction::Right,
+            };
+            let result = origin_node
+                .search_by_id(id_search_req)
+                .expect("failed to search by id");
+            assert_eq!(result.result, target_id);
         });
         handles.push(handle);
     }
 
-    join_all_with_timeout(handles.into_boxed_slice(), std::time::Duration::from_secs(10))
-        .expect("search_by_id did not complete within timeout (likely deadlocked)");
+    join_all_with_timeout(
+        handles.into_boxed_slice(),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("search_by_id did not complete within timeout (likely deadlocked)");
 }
-

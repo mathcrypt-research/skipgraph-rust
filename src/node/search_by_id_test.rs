@@ -1,6 +1,7 @@
 use super::base_node::BaseNode;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
+use crate::core::model::search::Nonce;
 use crate::core::testutil::fixtures::{
     random_address, random_identifier, random_identifier_greater_than,
     random_lookup_table_with_extremes, random_membership_vector, span_fixture,
@@ -10,7 +11,6 @@ use crate::network::{Event, EventProcessorCore, NetworkMock};
 use crate::node::core::BaseCore;
 use std::sync::Arc;
 use unimock::*;
-use crate::core::model::search::RequestId;
 
 /// Verifies the node, acting as an `EventProcessor`, relays an
 /// `IdSearchRequest` event to the expected neighbor via the network.
@@ -23,26 +23,28 @@ fn test_search_by_id_networking_integration_relay() {
     // not self — forcing the relay branch.
     let safe_neighbor = random_identifier_greater_than(&target);
     lt.update_entry(
-        Identity::new(
-            &safe_neighbor,
-            &random_membership_vector(),
-            random_address(),
-        ),
+        Identity::new(safe_neighbor, random_membership_vector(), random_address()),
         0,
         Direction::Left,
     )
     .expect("failed to update entry in lookup table");
 
     let node_id = random_identifier();
-    let search_request = IdSearchReq::new(RequestId::random(), node_id, target, 0, Direction::Left);
+    let search_request = IdSearchReq {
+        nonce: Nonce::random(),
+        origin: node_id,
+        target,
+        level: 0,
+        direction: Direction::Left,
+    };
     let request_event = Event::SearchByIdRequest(search_request);
 
     let (expected_lvl, expected_identity) = lt
         .left_neighbors()
         .unwrap()
         .into_iter()
-        .filter(|(l, id)| *l <= search_request.level() && id.id() >= search_request.target())
-        .min_by_key(|(_, id)| *id.id())
+        .filter(|(l, id)| *l <= search_request.level && id.id() >= search_request.target)
+        .min_by_key(|(_, id)| id.id())
         .unwrap();
 
     let mock_net = Unimock::new((
@@ -54,8 +56,8 @@ fn test_search_by_id_networking_integration_relay() {
             .answers_arc(Arc::new(
                 move |_, id: Identifier, event: Event| match event {
                     Event::SearchByIdRequest(req) => {
-                        assert_eq!(req.level(), expected_lvl);
-                        assert_eq!(id, *expected_identity.id());
+                        assert_eq!(req.level, expected_lvl);
+                        assert_eq!(id, expected_identity.id());
                         Ok(())
                     }
                     _ => panic!("expected IdSearchRequest payload, got: {:?}", event),
@@ -91,7 +93,13 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
     let origin_id = random_identifier();
     let node_id = random_identifier();
 
-    let search_request = IdSearchReq::new(RequestId::random(), origin_id, node_id, 0, Direction::Left);
+    let search_request = IdSearchReq {
+        nonce: Nonce::random(),
+        origin: origin_id,
+        target: node_id,
+        level: 0,
+        direction: Direction::Left,
+    };
     let request_event = Event::SearchByIdRequest(search_request);
 
     let mock_net = Unimock::new((
@@ -108,8 +116,7 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
                             "expected result to be to the originator's identifier"
                         );
                         assert_eq!(
-                            *res.result(),
-                            node_id,
+                            res.result, node_id,
                             "expected result to be the node's identifier"
                         );
                         Ok(())

@@ -15,21 +15,21 @@ use tracing::Span;
 /// `BaseNode`, which owns a `Box<dyn Core>` and routes events to/from it.
 pub trait Core: Send + Sync {
     /// Returns the identifier of the node this core belongs to.
-    fn id(&self) -> &Identifier;
+    fn id(&self) -> Identifier;
 
     /// Returns the membership vector of the node this core belongs to.
-    fn mem_vec(&self) -> &MembershipVector;
+    fn mem_vec(&self) -> MembershipVector;
 
     /// Performs a local search for the given identifier in the lookup table
     /// in the direction and up to the level specified by the request. The
     /// result is the closest neighbor satisfying the directional constraint,
     /// or — if no such neighbor exists at any level — the caller's own
     /// identifier at level 0 (the Aspnes & Shah fallback).
-    fn search_by_id(&self, req: &IdSearchReq) -> anyhow::Result<IdSearchRes>;
+    fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Performs a local search for the given membership vector.
     #[allow(dead_code)]
-    fn search_by_mem_vec(&self, req: &IdSearchReq) -> anyhow::Result<IdSearchRes>;
+    fn search_by_mem_vec(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Shallow-clones this core. Cloned instances share the same underlying
     /// state (lookup table, etc.) via Arc.
@@ -87,28 +87,28 @@ impl Clone for BaseCore {
 }
 
 impl Core for BaseCore {
-    fn id(&self) -> &Identifier {
-        &self.id
+    fn id(&self) -> Identifier {
+        self.id
     }
 
-    fn mem_vec(&self) -> &MembershipVector {
-        &self.mem_vec
+    fn mem_vec(&self) -> MembershipVector {
+        self.mem_vec
     }
 
-    fn search_by_id(&self, req: &IdSearchReq) -> anyhow::Result<IdSearchRes> {
+    fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
         let span = tracing::trace_span!(
             parent: &self.span,
             "search_by_id_req",
-            target = ?req.target(),
-            dir = ?req.direction(),
-            level = ?req.level()
+            target = ?req.target,
+            dir = ?req.direction,
+            level = ?req.level
         );
         let _enter = span.enter();
 
         // Collect neighbors from levels <= req.level in req.direction
-        let candidates: Result<Vec<_>, _> = (0..=req.level())
-            .filter_map(|lvl| match self.lt.get_entry(lvl, req.direction()) {
-                Ok(Some(identity)) => Some(Ok((*identity.id(), lvl))),
+        let candidates: Result<Vec<_>, _> = (0..=req.level)
+            .filter_map(|lvl| match self.lt.get_entry(lvl, req.direction) {
+                Ok(Some(identity)) => Some(Ok((identity.id(), lvl))),
                 Ok(None) => None,
                 Err(e) => Some(Err(anyhow!(
                     "error while searching by id in level {}: {}",
@@ -123,30 +123,35 @@ impl Core for BaseCore {
         tracing::trace!(
             "found {} candidates across levels 0-{}",
             candidates.len(),
-            req.level()
+            req.level
         );
 
         // Filter candidates based on the direction
-        let result = match req.direction() {
+        let result = match req.direction {
             Direction::Left => {
                 // smallest identifier that is >= target
                 candidates
                     .into_iter()
-                    .filter(|(id, _)| id >= req.target())
+                    .filter(|(id, _)| id >= &req.target)
                     .min_by_key(|(id, _)| *id)
             }
             Direction::Right => {
                 // greatest identifier that is <= target
                 candidates
                     .into_iter()
-                    .filter(|(id, _)| id <= req.target())
+                    .filter(|(id, _)| id <= &req.target)
                     .max_by_key(|(id, _)| *id)
             }
         };
 
         match result {
             Some((id, level)) => {
-                let search_result = IdSearchRes::new(req.req_id(), *req.target(), level, id);
+                let search_result = IdSearchRes {
+                    nonce: req.nonce,
+                    target: req.target,
+                    termination_level: level,
+                    result: id,
+                };
                 tracing::trace!("search successful: found match {:?} at level {}", id, level);
                 Ok(search_result)
             }
@@ -157,12 +162,17 @@ impl Core for BaseCore {
                     "search fallback: no valid candidates found, returning own identifier {:?}",
                     self.id
                 );
-                Ok(IdSearchRes::new(req.req_id(), *req.target(), 0, self.id))
+                Ok(IdSearchRes {
+                    nonce: req.nonce,
+                    target: req.target,
+                    termination_level: 0,
+                    result: self.id,
+                })
             }
         }
     }
 
-    fn search_by_mem_vec(&self, _req: &IdSearchReq) -> anyhow::Result<IdSearchRes> {
+    fn search_by_mem_vec(&self, _req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
         todo!()
     }
 

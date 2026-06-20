@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::core::model::search::Nonce;
 use crate::core::{IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, MembershipVector};
 use crate::network::Event::{SearchByIdRequest, SearchByIdResponse};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
@@ -6,12 +6,12 @@ use crate::network::MessageProcessor;
 use crate::network::{Event, EventProcessorCore, Network};
 use crate::node::core::Core;
 use anyhow::anyhow;
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Formatter;
 use std::sync::mpsc::sync_channel;
 use std::sync::{mpsc::SyncSender, Arc, Mutex};
 use tracing::Span;
-use crate::core::model::search::RequestId;
 
 // TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
 #[allow(dead_code)]
@@ -28,7 +28,7 @@ pub(crate) struct BaseNode {
     span: Span,
     ctx: IrrevocableContext,
     // map from request id to the sender end of the channel for the response
-    request_id_map: Arc<Mutex<HashMap<RequestId, SyncSender<IdSearchRes>>>>,
+    request_id_map: Arc<Mutex<HashMap<Nonce, SyncSender<IdSearchRes>>>>,
 }
 
 impl BaseNode {
@@ -69,58 +69,74 @@ impl BaseNode {
 
     /// Returns the node's identifier (delegated to core).
     #[allow(dead_code)]
-    pub(crate) fn id(&self) -> &Identifier {
+    pub(crate) fn id(&self) -> Identifier {
         self.core.id()
     }
 
     /// Returns the node's membership vector (delegated to core).
     #[allow(dead_code)]
-    pub(crate) fn mem_vec(&self) -> &MembershipVector {
+    pub(crate) fn mem_vec(&self) -> MembershipVector {
         self.core.mem_vec()
     }
 
     #[allow(dead_code)]
-    pub(crate) fn search_by_id(&self, req: &IdSearchReq) -> anyhow::Result<IdSearchRes> {
-        let span =
-            tracing::trace_span!("search_by_id", target = ?req.target(), level = ?req.level());
+    pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
+        let span = tracing::trace_span!("search_by_id", target = ?req.target, level = ?req.level);
         let _enter = span.enter();
 
-        tracing::trace!("searching for target {:?}", req.target());
+        tracing::trace!("searching for target {:?}", req.target);
         let local_res = self
             .core
             .search_by_id(req)
             .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
-        if local_res.result() == self.core.id() {
+        if local_res.result == self.core.id() {
             tracing::trace!("found self in search by id, terminating the search result");
             return Ok(local_res);
         }
 
         let (tx, rx) = sync_channel::<IdSearchRes>(1);
         {
-            let mut request_id_map = self.request_id_map.lock().expect("mutex was poisoned by a previous panic");
-            request_id_map.insert(req.req_id(), tx);
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(req.nonce, tx);
         }
-        let relay_request = SearchByIdRequest(IdSearchReq::new(
-            req.req_id(),
-            *self.core.id(),
-            *req.target(),
-            local_res.termination_level(),
-            req.direction(),
-        ));
-        if let Err(e) = self.net.send_event(*local_res.result(), relay_request) {
-            self.request_id_map.lock().expect("mutex was poisoned by a previous panic").remove(&req.req_id());
+        let relay_request = SearchByIdRequest(IdSearchReq {
+            nonce: req.nonce,
+            target: req.target,
+            origin: self.core.id(),
+            level: local_res.termination_level,
+            direction: req.direction,
+        });
+
+        if let Err(e) = self.net.send_event(local_res.result, relay_request) {
+            self.request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic")
+                .remove(&req.nonce);
             return Err(anyhow!("failed to perform search by id {}", e));
         }
         tracing::info!("relayed search by id request to the next node, pending response");
-        let net_result = rx
-            .recv()
-            .map_err(|_| anyhow!("failed to receive response for search by id"))?;
-        tracing::info!(
-            "received network response for search by id {:?}: {:?}",
-            *req.target(),
-            net_result.result()
-        );
-        Ok(net_result)
+        match rx.recv() {
+            Ok(net_result) => {
+                tracing::info!(
+                    "received network response for search by id {:?}: {:?}",
+                    req.target,
+                    net_result.result
+                );
+                Ok(net_result)
+            }
+            Err(_) => {
+                self.request_id_map
+                    .lock()
+                    .expect("mutex was poisoned by a previous panic")
+                    .remove(&req.nonce);
+                Err(anyhow!(
+                    "failed to receive network response for search by id"
+                ))
+            }
+        }
     }
 }
 
@@ -133,28 +149,28 @@ impl EventProcessorCore for BaseNode {
                 let span = tracing::trace_span!(
                     "search_by_id_request",
                     origin = ?origin_id,
-                    target = ?req.target(),
-                    direction = ?req.direction(),
-                    level = ?req.level()
+                    target = ?req.target,
+                    direction = ?req.direction,
+                    level = ?req.level
                 );
                 let _enter = span.enter();
                 tracing::trace!("received request");
 
                 let res = self
                     .core
-                    .search_by_id(&req)
+                    .search_by_id(req)
                     .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
 
                 let span = tracing::trace_span!(
                     "terminating",
-                    result = ?res.result(),
-                    termination_level = ?res.termination_level()
+                    result = ?res.result,
+                    termination_level = ?res.termination_level
                 );
                 let _enter = span.enter();
 
-                if res.result() == self.core.id() {
+                if res.result == self.core.id() {
                     self.net
-                        .send_event(*req.origin(), SearchByIdResponse(res))
+                        .send_event(req.origin, SearchByIdResponse(res))
                         .map_err(|e| {
                             anyhow!("failed to send response event for search by id: {}", e)
                         })?;
@@ -162,15 +178,13 @@ impl EventProcessorCore for BaseNode {
                     return Ok(());
                 }
 
-                let relay_request = SearchByIdRequest(IdSearchReq::new(
-                    req.req_id(),
-                    *req.origin(),
-                    *req.target(),
-                    res.termination_level(),
-                    req.direction(),
-                ));
+                let relay_request = SearchByIdRequest(IdSearchReq {
+                    level: res.termination_level,
+                    ..req
+                });
+
                 self.net
-                    .send_event(*res.result(), relay_request)
+                    .send_event(res.result, relay_request)
                     .map_err(|e| {
                         anyhow!(
                             "failed to send relay response event for search by id: {}",
@@ -184,16 +198,17 @@ impl EventProcessorCore for BaseNode {
                 let span = tracing::trace_span!(
                     "search_by_id_response",
                     origin = ?origin_id,
-                    target = ?res.target(),
-                    result = ?res.result(),
-                    termination_level = ?res.termination_level()
+                    target = ?res.target,
+                    result = ?res.result,
+                    termination_level = ?res.termination_level
                 );
                 let _enter = span.enter();
 
-                let waiter = self.request_id_map
+                let waiter = self
+                    .request_id_map
                     .lock()
                     .expect("mutex was poisoned by a previous panic")
-                    .remove(&res.request_id());
+                    .remove(&res.nonce);
                 if let Some(tx) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
@@ -221,8 +236,8 @@ impl PartialEq for BaseNode {
 impl fmt::Debug for BaseNode {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("BaseNode")
-            .field("id", self.core.id())
-            .field("mem_vec", self.core.mem_vec())
+            .field("id", &self.core.id())
+            .field("mem_vec", &self.core.mem_vec())
             .finish()
     }
 }
@@ -275,7 +290,7 @@ mod tests {
         ));
 
         let node = BaseNode::new(span.clone(), core, Box::new(mock_net)).unwrap();
-        assert_eq!(node.id(), &id);
-        assert_eq!(node.mem_vec(), &mem_vec);
+        assert_eq!(node.id(), id);
+        assert_eq!(node.mem_vec(), mem_vec);
     }
 }

@@ -14,10 +14,9 @@ mod tests {
 
         // Wait until cancellation is processed
         let ctx_clone = ctx.clone();
-        wait_until(
-            move || ctx_clone.is_cancelled(),
-            Duration::from_millis(100)
-        ).await.expect("context should be cancelled within 100ms");
+        wait_until(move || ctx_clone.is_cancelled(), Duration::from_millis(100))
+            .await
+            .expect("context should be cancelled within 100ms");
     }
 
     /// this test ensures that cancelling a parent context cancels its children
@@ -33,8 +32,10 @@ mod tests {
         let child_clone = child.clone();
         wait_until(
             move || child_clone.is_cancelled(),
-            Duration::from_millis(100)
-        ).await.expect("child context should be cancelled within 100ms");
+            Duration::from_millis(100),
+        )
+        .await
+        .expect("child context should be cancelled within 100ms");
     }
 
     /// this test ensures that running an operation completes successfully if its context is not canceled
@@ -42,9 +43,7 @@ mod tests {
     async fn test_successful_operation() {
         let ctx = IrrevocableContext::new(&span_fixture(), "test_context");
 
-        let result = ctx.run(async {
-            Ok::<i32, anyhow::Error>(42)
-        }).await;
+        let result = ctx.run(async { Ok::<i32, anyhow::Error>(42) }).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
@@ -61,24 +60,26 @@ mod tests {
 
         // Wait for cancellation to be processed
         let ctx_clone = ctx.clone();
-        wait_until(
-            move || ctx_clone.is_cancelled(),
-            Duration::from_millis(100)
-        ).await.expect("context should be cancelled within 100ms");
+        wait_until(move || ctx_clone.is_cancelled(), Duration::from_millis(100))
+            .await
+            .expect("context should be cancelled within 100ms");
 
-        let result = ctx.run(async {
-            // This should not execute due to cancellation
-            sleep(Duration::from_millis(10)).await;
-            Ok::<i32, anyhow::Error>(42)
-
-        }).await;
+        let result = ctx
+            .run(async {
+                // This should not execute due to cancellation
+                sleep(Duration::from_millis(10)).await;
+                Ok::<i32, anyhow::Error>(42)
+            })
+            .await;
 
         // The operation should return an error since the context was canceled before it could complete
         assert!(result.is_err());
         // The error should indicate cancellation
-        assert!(result.unwrap_err().to_string().contains("context cancelled"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("context cancelled"));
     }
-
 
     /// this test ensures that nested child contexts are canceled when the root context is canceled
     #[tokio::test]
@@ -99,9 +100,15 @@ mod tests {
         let child2_clone = child2.clone();
         let grandchild_clone = grandchild.clone();
         wait_until(
-            move || child1_clone.is_cancelled() && child2_clone.is_cancelled() && grandchild_clone.is_cancelled(),
-            Duration::from_millis(100)
-        ).await.expect("all child contexts should be cancelled within 100ms");
+            move || {
+                child1_clone.is_cancelled()
+                    && child2_clone.is_cancelled()
+                    && grandchild_clone.is_cancelled()
+            },
+            Duration::from_millis(100),
+        )
+        .await
+        .expect("all child contexts should be cancelled within 100ms");
     }
 
     /// Test that we can create the error propagation hierarchy
@@ -137,7 +144,7 @@ mod tests {
         if let Err(panic_payload) = result {
             if let Some(panic_msg) = panic_payload.downcast_ref::<String>() {
                 assert_eq!(panic_msg, "irrecoverable error: test irrecoverable error");
-            } else{
+            } else {
                 panic!("unexpected panic payload type");
             }
         }

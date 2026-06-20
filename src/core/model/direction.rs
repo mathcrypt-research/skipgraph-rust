@@ -19,5 +19,5 @@ impl Display for Direction {
 impl Debug for Direction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self)
-    }   
+    }
 }

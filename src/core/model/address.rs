@@ -1,5 +1,5 @@
-use std::fmt::Debug;
 use fixedstr::{str128, str8};
+use std::fmt::Debug;
 
 /// Represents a networking address; composed of host + port
 #[derive(Copy, Clone, PartialEq)]

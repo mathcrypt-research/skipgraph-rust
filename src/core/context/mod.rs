@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
 /// A cancelable context that supports parent-child hierarchies and irrecoverable error propagation.
-/// 
+///
 /// When an irrecoverable error is thrown, it propagates up to the root context and terminates the program.
 /// Children automatically get cancelled when their parent is cancelled.
 pub struct IrrevocableContext {
@@ -34,7 +34,7 @@ impl IrrevocableContext {
     /// Create a new root context
     pub fn new(parent_span: &Span, tag: &str) -> Self {
         let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context", tag = tag);
-        
+
         Self {
             inner: Arc::new(ContextInner {
                 token: CancellationToken::new(),
@@ -82,7 +82,7 @@ impl IrrevocableContext {
         F: std::future::Future<Output = Result<T>>,
     {
         let _enter = self.inner.span.enter();
-        
+
         tokio::select! {
             result = future => result,
             _ = self.cancelled() => {
@@ -96,13 +96,13 @@ impl IrrevocableContext {
     /// there is no return from this function.
     pub fn throw_irrecoverable(&self, err: anyhow::Error) -> ! {
         let _enter = self.inner.span.enter();
-        
+
         // Propagate to parent if it exists
         if let Some(parent) = &self.inner.parent {
             tracing::error!("propagating irrecoverable error to parent context");
             parent.throw_irrecoverable(err);
         }
-        
+
         // Root context - panic with the error
         panic!("irrecoverable error: {}", err);
     }
@@ -145,4 +145,3 @@ impl Clone for IrrevocableContext {
         }
     }
 }
-

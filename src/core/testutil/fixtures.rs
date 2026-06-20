@@ -83,8 +83,8 @@ pub fn random_address() -> Address {
 
 pub fn random_identity() -> Identity {
     Identity::new(
-        &random_identifier(),
-        &random_membership_vector(),
+        random_identifier(),
+        random_membership_vector(),
         random_address(),
     )
 }
@@ -99,8 +99,7 @@ pub fn random_lookup_table(n: usize) -> ArrayLookupTable {
     let ids = random_identities(2 * n);
     for i in 0..n {
         lt.update_entry(ids[i], i, Direction::Left).unwrap();
-        lt.update_entry(ids[i + n], i, Direction::Right)
-            .unwrap();
+        lt.update_entry(ids[i + n], i, Direction::Right).unwrap();
     }
     lt
 }
@@ -115,8 +114,8 @@ pub fn random_lookup_table_with_extremes(n: usize) -> ArrayLookupTable {
     let max_id = Identifier::from_bytes(&[0xFFu8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
     let max_mv = MembershipVector::from_bytes(&[0xFFu8; model::IDENTIFIER_SIZE_BYTES]).unwrap();
 
-    let zero_identity = Identity::new(&zero_id, &zero_mv, random_address());
-    let max_identity = Identity::new(&max_id, &max_mv, random_address());
+    let zero_identity = Identity::new(zero_id, zero_mv, random_address());
+    let max_identity = Identity::new(max_id, max_mv, random_address());
 
     lt.update_entry(zero_identity, 0, Direction::Left).unwrap();
     lt.update_entry(max_identity, 0, Direction::Right).unwrap();
@@ -242,23 +241,18 @@ mod test {
 }
 
 /// Polls `condition` on a blocking task (yielding between checks) until it is true or `timeout` elapses.
-pub async fn wait_until<F>(
-    mut condition: F,
-    timeout: Duration,
-) -> Result<(), String>
+pub async fn wait_until<F>(mut condition: F, timeout: Duration) -> Result<(), String>
 where
     F: FnMut() -> bool + Send + 'static,
 {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
-    let condition_task = tokio::task::spawn_blocking(move || {
-        loop {
-            if condition() {
-                let _ = tx.send(Ok(()));
-                return;
-            }
-            std::thread::yield_now();
+    let condition_task = tokio::task::spawn_blocking(move || loop {
+        if condition() {
+            let _ = tx.send(Ok(()));
+            return;
         }
+        std::thread::yield_now();
     });
 
     let result = match tokio::time::timeout(timeout, rx).await {
