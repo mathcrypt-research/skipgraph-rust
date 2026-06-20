@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use crate::core::testutil::fixtures::*;
-    use std::collections::HashMap;
-    use crate::core::{model, ArrayLookupTable, LookupTable, LOOKUP_TABLE_LEVELS};
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
+    use crate::core::testutil::fixtures::*;
+    use crate::core::{model, ArrayLookupTable, LookupTable, LOOKUP_TABLE_LEVELS};
+    use std::collections::HashMap;
 
     #[test]
     /// A new lookup table should be empty.
@@ -127,8 +127,7 @@ mod tests {
         let identities = random_identities(2 * levels);
 
         for i in 0..levels {
-            lt.update_entry(identities[i], i, Direction::Left)
-                .unwrap();
+            lt.update_entry(identities[i], i, Direction::Left).unwrap();
             lt.update_entry(identities[i + levels], i, Direction::Right)
                 .unwrap();
         }
@@ -242,8 +241,8 @@ mod tests {
     /// Note: failure or flaky behavior of this test may indicate a bug in the implementation.
     #[test]
     fn test_randomized_concurrent_operations_with_validation() {
-        use rand::Rng;
         use parking_lot::Mutex;
+        use rand::Rng;
         use std::sync::{Arc, Barrier};
         use std::thread;
 

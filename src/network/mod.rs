@@ -1,7 +1,7 @@
 pub mod mock;
 mod processor;
 
-use crate::core::{Identifier, IdSearchReq, IdSearchRes};
+use crate::core::{IdSearchReq, IdSearchRes, Identifier};
 #[allow(unused)]
 pub use processor::MessageProcessor;
 
@@ -11,7 +11,7 @@ pub use processor::MessageProcessor;
 pub enum Event {
     TestMessage(String), // A payload for testing purposes, it is a simple string event, and is not used in production.
     SearchByIdRequest(IdSearchReq), // A payload representing an identifier search request.
-    SearchByIdResponse(IdSearchRes) // A payload representing an identifier search response.
+    SearchByIdResponse(IdSearchRes), // A payload representing an identifier search response.
 }
 
 /// Core event processing logic that implementations must provide.

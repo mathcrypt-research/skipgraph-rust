@@ -8,7 +8,15 @@ This is a Rust implementation of Skip Graphs - a distributed data structure for 
 
 ## References
 
-- `skip-graphs-paper.pdf` (Aspnes & Shah) — canonical algorithms: search (Algorithm 1, p.6), insert/join (Algorithm 2, p.8), delete (Algorithm 3, p.8).
+Source papers and private documents live in `internal/` (gitignored, never committed).
+
+- `internal/skip-graphs-paper.pdf` — Aspnes & Shah, "Skip Graphs". Canonical algorithms: search (Algorithm 1, p.6), insert/join (Algorithm 2, p.8), delete (Algorithm 3, p.8).
+
+### Rules for internal references
+
+1. **Never cite internal documents in code.** No path references, no "see PDF p.X", no file names from `internal/` in source files, comments, or doc-strings.
+2. **Restate, don't link.** If an algorithm, invariant, or design decision from an internal document is needed in the codebase, copy the relevant content explicitly — as a comment, a doc-string, or a design doc under `docs/` — and use that in-codebase copy as the reference going forward.
+3. **Agents must follow the same rules.** Any agent working in this repository must not produce code or comments that reference `internal/` paths or document titles. Extract and restate; never leak.
 
 ## Architecture
 

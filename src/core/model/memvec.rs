@@ -69,7 +69,7 @@ impl MembershipVector {
     /// # Returns
     ///
     /// * `Vec<u8>` - A vector containing the bytes of the MembershipVector.
-    /// 
+    ///
     /// Consider using `as_bytes()` if you don't need ownership.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.0.to_vec()
@@ -84,7 +84,7 @@ impl MembershipVector {
     /// # Returns
     ///
     /// * `u64` - The number of common prefix bits.
-    pub fn common_prefix_bit(&self, other: &MembershipVector) -> usize {
+    pub fn common_prefix_bit(&self, other: MembershipVector) -> usize {
         let mut common_bits = 0;
         for (byte_a, byte_b) in self.0.iter().zip(other.0.iter()) {
             let xor = byte_a ^ byte_b;
@@ -239,16 +239,16 @@ mod test {
 
         // every membership vector should have complete common bits prefix with itself.
         assert_eq!(
-            mv_0.common_prefix_bit(&mv_0),
+            mv_0.common_prefix_bit(mv_0),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
         assert_eq!(
-            mv_1.common_prefix_bit(&mv_1),
+            mv_1.common_prefix_bit(mv_1),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
 
         // all zero and all one should not have any common bits prefix
-        assert_eq!(mv_0.common_prefix_bit(&mv_1), 0);
+        assert_eq!(mv_0.common_prefix_bit(mv_1), 0);
 
         // first byte is 01111111 and the rest is all 1
         let first_bit_zero = [
@@ -259,15 +259,15 @@ mod test {
         let mv_01 = MembershipVector::from_bytes(&first_bit_zero).unwrap();
         // should have complete common prefix with itself
         assert_eq!(
-            mv_01.common_prefix_bit(&mv_01),
+            mv_01.common_prefix_bit(mv_01),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
         // should have zero common prefix with all 1s.
-        assert_eq!(mv_1.common_prefix_bit(&mv_01), 0);
-        assert_eq!(mv_01.common_prefix_bit(&mv_1), 0);
+        assert_eq!(mv_1.common_prefix_bit(mv_01), 0);
+        assert_eq!(mv_01.common_prefix_bit(mv_1), 0);
         // should have 1 common bit prefix with all 0s (only the first bit)
-        assert_eq!(mv_0.common_prefix_bit(&mv_01), 1);
-        assert_eq!(mv_01.common_prefix_bit(&mv_0), 1);
+        assert_eq!(mv_0.common_prefix_bit(mv_01), 1);
+        assert_eq!(mv_01.common_prefix_bit(mv_0), 1);
 
         // 00111111 11111111 ...
         // first two bits are zero and the rest is all 1
@@ -276,15 +276,15 @@ mod test {
         let mv_001 = MembershipVector::from_bytes(&first_two_bits_zero).unwrap();
         // should have complete common prefix with itself
         assert_eq!(
-            mv_001.common_prefix_bit(&mv_001),
+            mv_001.common_prefix_bit(mv_001),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
         // should have two bits common prefix with all 0s.
-        assert_eq!(mv_001.common_prefix_bit(&mv_0), 2);
-        assert_eq!(mv_0.common_prefix_bit(&mv_001), 2);
+        assert_eq!(mv_001.common_prefix_bit(mv_0), 2);
+        assert_eq!(mv_0.common_prefix_bit(mv_001), 2);
         // should have zero bits common prefix with all 1s.
-        assert_eq!(mv_001.common_prefix_bit(&mv_1), 0);
-        assert_eq!(mv_1.common_prefix_bit(&mv_001), 0);
+        assert_eq!(mv_001.common_prefix_bit(mv_1), 0);
+        assert_eq!(mv_1.common_prefix_bit(mv_001), 0);
 
         // 11111111 00000000 11111111 11111111 ...
         // first byte all ones; second byte all zeros; third and rest all ones
@@ -297,15 +297,15 @@ mod test {
         let mv_second_byte_all_zero = MembershipVector::from_bytes(&second_byte_all_zero).unwrap();
         // should have complete common prefix with itself.
         assert_eq!(
-            mv_second_byte_all_zero.common_prefix_bit(&mv_second_byte_all_zero),
+            mv_second_byte_all_zero.common_prefix_bit(mv_second_byte_all_zero),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
         // should have zero bits common prefix with all zeros
-        assert_eq!(mv_second_byte_all_zero.common_prefix_bit(&mv_0), 0);
-        assert_eq!(mv_0.common_prefix_bit(&mv_second_byte_all_zero), 0);
+        assert_eq!(mv_second_byte_all_zero.common_prefix_bit(mv_0), 0);
+        assert_eq!(mv_0.common_prefix_bit(mv_second_byte_all_zero), 0);
         // should have 8 bits (one complete byte) common prefix with all ones.
-        assert_eq!(mv_second_byte_all_zero.common_prefix_bit(&mv_1), 8);
-        assert_eq!(mv_1.common_prefix_bit(&mv_second_byte_all_zero), 8);
+        assert_eq!(mv_second_byte_all_zero.common_prefix_bit(mv_1), 8);
+        assert_eq!(mv_1.common_prefix_bit(mv_second_byte_all_zero), 8);
 
         // 11111111 10000000 11111111 11111111 ...
         let second_byte_128 = [
@@ -317,22 +317,22 @@ mod test {
         let mv_second_byte_128 = MembershipVector::from_bytes(&second_byte_128).unwrap();
         // should have complete common prefix with itself
         assert_eq!(
-            mv_second_byte_128.common_prefix_bit(&mv_second_byte_128),
+            mv_second_byte_128.common_prefix_bit(mv_second_byte_128),
             model::IDENTIFIER_SIZE_BYTES * 8
         );
         // should have zero bits common prefix with all zeros;
-        assert_eq!(mv_second_byte_128.common_prefix_bit(&mv_0), 0);
-        assert_eq!(mv_0.common_prefix_bit(&mv_second_byte_128), 0);
+        assert_eq!(mv_second_byte_128.common_prefix_bit(mv_0), 0);
+        assert_eq!(mv_0.common_prefix_bit(mv_second_byte_128), 0);
         // should have 9 bits common prefix with all ones (first byte and first bit of the second byte):
-        assert_eq!(mv_second_byte_128.common_prefix_bit(&mv_1), 8 + 1);
-        assert_eq!(mv_1.common_prefix_bit(&mv_second_byte_128), 8 + 1);
+        assert_eq!(mv_second_byte_128.common_prefix_bit(mv_1), 8 + 1);
+        assert_eq!(mv_1.common_prefix_bit(mv_second_byte_128), 8 + 1);
         // should have 8 bits common prefix with the second_byte_all_zero
         assert_eq!(
-            mv_second_byte_128.common_prefix_bit(&mv_second_byte_all_zero),
+            mv_second_byte_128.common_prefix_bit(mv_second_byte_all_zero),
             8
         );
         assert_eq!(
-            mv_second_byte_all_zero.common_prefix_bit(&mv_second_byte_128),
+            mv_second_byte_all_zero.common_prefix_bit(mv_second_byte_128),
             8
         );
 
@@ -359,8 +359,8 @@ mod test {
             &[left_bytes.clone(), vec![255u8; 1], right_bytes.clone()].concat(),
         )
         .unwrap();
-        assert_eq!(mv_239.common_prefix_bit(&mv_255), random_index * 8 + 3);
-        assert_eq!(mv_255.common_prefix_bit(&mv_239), random_index * 8 + 3);
+        assert_eq!(mv_239.common_prefix_bit(mv_255), random_index * 8 + 3);
+        assert_eq!(mv_255.common_prefix_bit(mv_239), random_index * 8 + 3);
 
         // Case 2: at random index; they differ at a random bit
         let byte_1 = random::bytes(1)[0];
@@ -387,7 +387,7 @@ mod test {
         // is at the random_bit_index, so the first 8 - random_bit_index bits are common prefix.
         // However, random-bit-index starts from 0, so we indeed have (8 - (random_bit_index + 1)) bits common prefix.
         assert_eq!(
-            mv_1.common_prefix_bit(&mv_2),
+            mv_1.common_prefix_bit(mv_2),
             random_index * 8 + (7 - random_bit_index)
         );
     }

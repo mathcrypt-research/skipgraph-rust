@@ -87,7 +87,12 @@ impl LookupTable for ArrayLookupTable {
         }
 
         // Log the update operation
-        tracing::trace!("lookup table entry updated: level {}, direction {}, identifier {}", level, direction, identity.id());
+        tracing::trace!(
+            "lookup table entry updated: level {}, direction {}, identifier {}",
+            level,
+            direction,
+            identity.id()
+        );
         Ok(())
     }
 

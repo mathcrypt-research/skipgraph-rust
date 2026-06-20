@@ -1,7 +1,7 @@
-use crate::network::{EventProcessorCore, Event};
+use crate::core::Identifier;
+use crate::network::{Event, EventProcessorCore};
 use parking_lot::RwLock;
 use std::sync::Arc;
-use crate::core::Identifier;
 
 /// A thread-safe wrapper that enforces internal thread-safety for event processors.
 /// This type guarantees that all event processing is properly synchronized.
@@ -19,7 +19,11 @@ impl MessageProcessor {
     }
 
     /// Process an incoming event with guaranteed thread-safety.
-    pub fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
+    pub fn process_incoming_event(
+        &self,
+        origin_id: Identifier,
+        event: Event,
+    ) -> anyhow::Result<()> {
         let core = self.core.read();
         core.process_incoming_event(origin_id, event)
     }
@@ -50,7 +54,11 @@ mod tests {
     }
 
     impl EventProcessorCore for MockMessageProcessorCore {
-        fn process_incoming_event(&self, _origin_id: Identifier, _event: Event) -> anyhow::Result<()> {
+        fn process_incoming_event(
+            &self,
+            _origin_id: Identifier,
+            _event: Event,
+        ) -> anyhow::Result<()> {
             self.counter.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -70,12 +78,14 @@ mod tests {
         assert_eq!(counter_ref.load(Ordering::SeqCst), 0);
 
         let origin_id = random_identifier();
-        processor.process_incoming_event(origin_id, test_event).unwrap();
+        processor
+            .process_incoming_event(origin_id, test_event)
+            .unwrap();
         assert_eq!(counter_ref.load(Ordering::SeqCst), 1);
 
         let origin_id2 = random_identifier();
         let test_event2 = Event::TestMessage("test2".to_string());
-        
+
         processor_clone
             .process_incoming_event(origin_id2, test_event2)
             .unwrap();

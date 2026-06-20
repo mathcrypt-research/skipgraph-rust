@@ -17,6 +17,11 @@ target/
 #.idea/
 .DS_Store
 
+# Untracked internal references (papers, private docs, etc.).
+# Contents must never be referenced directly in code or comments.
+# Extract and restate any needed information explicitly in the codebase.
+internal/
+
 Cargo.lock
 
 .idea/

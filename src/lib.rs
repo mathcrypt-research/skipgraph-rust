@@ -1,3 +1,3 @@
 pub mod core;
-mod node;
 mod network;
+mod node;

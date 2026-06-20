@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use crate::core::Identifier;
 use crate::network::mock::hub::NetworkHub;
 use crate::network::{Event, MessageProcessor, Network};
 use anyhow::{anyhow, Context};
 use parking_lot::RwLock;
-use crate::core::Identifier;
+use std::sync::Arc;
 
 /// MockNetwork is a mock implementation of the Network trait for testing purposes.
 /// It does not perform any real network operations but simulates event routing and processing through a `NetworkHub`.
@@ -38,12 +38,12 @@ impl MockNetwork {
     /// * `Result<(), anyhow::Error>`: Returns Ok if the event was processed successfully, or an error if processing failed.
     pub fn incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
         let core_guard = self.core.read();
-        
+
         let processor = match core_guard.processor.as_ref() {
             Some(p) => p,
             None => return Err(anyhow!("no event processor registered")),
         };
-        
+
         processor
             .process_incoming_event(origin_id, event)
             .context("failed to process incoming event")
@@ -62,8 +62,9 @@ impl Network for MockNetwork {
     /// Sends an event through the mock network by routing it through the NetworkHub.
     fn send_event(&self, target_id: Identifier, event: Event) -> anyhow::Result<()> {
         let core_guard = self.core.read();
-        
-        core_guard.hub
+
+        core_guard
+            .hub
             .route_event(core_guard.id, target_id, event)
             .map_err(|e| anyhow!("failed to route event: {}", e))
     }
@@ -71,12 +72,9 @@ impl Network for MockNetwork {
     /// Registers an event processor to handle incoming events.
     /// Only one processor can be registered at a time.
     /// If a processor is already registered, an error is returned.
-    fn register_processor(
-        &self,
-        processor: MessageProcessor,
-    ) -> anyhow::Result<()> {
+    fn register_processor(&self, processor: MessageProcessor) -> anyhow::Result<()> {
         let mut core_guard = self.core.write();
-        
+
         match core_guard.processor.as_ref() {
             Some(_) => Err(anyhow!("an event processor is already registered")),
             None => {

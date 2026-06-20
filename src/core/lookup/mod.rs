@@ -1,7 +1,6 @@
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 
-
 pub mod array_lookup_table;
 mod array_lookup_table_test;
 
@@ -40,7 +39,7 @@ pub trait LookupTable: Send + Sync {
     fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
 
     /// Creates a shallow copy of this lookup table.
-    /// 
+    ///
     /// Implementations should ensure that cloned instances share the same underlying data
     /// (e.g., using Arc for shared ownership). Changes made through one instance should be
     /// visible in all cloned instances. This is the standard cloning behavior for all
