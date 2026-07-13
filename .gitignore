@@ -25,3 +25,9 @@ internal/
 Cargo.lock
 
 .idea/
+
+# Claude Code config — kept local, not tracked in this repo
+/CLAUDE.md
+/AGENTS.md
+/.claude
+/.claude-src
