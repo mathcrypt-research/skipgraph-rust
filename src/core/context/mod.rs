@@ -1,18 +1,20 @@
 //! Cancelable context with irrecoverable error propagation
 //!
-//! This module provides a simplified context implementation focused on:
+//! This module provides a context implementation focused on:
 //! - Cancellation support via tokio's CancellationToken
-//! - Parent-child context hierarchies  
+//! - Parent-child context hierarchies
 //! - Irrecoverable error propagation that terminates the application
+//! - Optional deadline/timeout support
 //!
-//! Unlike the full Go context API, this implementation focuses only on the core
-//! functionality needed: cancellation and error propagation.
+//! The deadline feature is additive: a context created with `new` behaves
+//! exactly like the previous minimal API (no deadline).
 
 #[cfg(test)]
 mod context_test;
 
 use anyhow::Result;
 use std::sync::Arc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::Span;
 
@@ -26,6 +28,8 @@ pub struct IrrevocableContext {
 
 struct ContextInner {
     token: CancellationToken,
+    /// Absolute deadline after which the context is considered expired, if any.
+    deadline: Option<Instant>,
     parent: Option<IrrevocableContext>,
     span: Span,
 }
@@ -38,18 +42,34 @@ impl IrrevocableContext {
         Self {
             inner: Arc::new(ContextInner {
                 token: CancellationToken::new(),
+                deadline: None,
                 parent: None,
                 span,
             }),
         }
     }
 
-    /// Create a child context that inherits cancellation from the parent
+    /// Create a new root context that expires after `timeout` elapses.
+    pub fn with_timeout(parent_span: &Span, tag: &str, timeout: std::time::Duration) -> Self {
+        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context_timeout", tag = tag);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                token: CancellationToken::new(),
+                deadline: Some(Instant::now() + timeout),
+                parent: None,
+                span,
+            }),
+        }
+    }
+
+    /// Create a child context that inherits cancellation and deadline from the parent.
     pub fn child(&self, tag: &str) -> Self {
         let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "irrevocable_context_child", tag = tag);
         Self {
             inner: Arc::new(ContextInner {
                 token: self.inner.token.child_token(),
+                deadline: self.inner.deadline,
                 parent: Some(self.clone()),
                 span,
             }),
@@ -74,19 +94,49 @@ impl IrrevocableContext {
         self.inner.token.cancelled().await;
     }
 
-    /// Run an operation with cancellation support
-    /// If the context is cancelled before the operation completes, it returns an error.
-    /// otherwise, it returns the operation's result.
+    /// Returns the absolute deadline for this context, if one was set.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline
+    }
+
+    /// Returns true if the context has a deadline that has already passed.
+    pub fn is_deadline_exceeded(&self) -> bool {
+        self.inner.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    /// Returns an error describing why the context is unusable (cancelled or past deadline), if so.
+    pub fn err(&self) -> Option<anyhow::Error> {
+        if self.is_cancelled() {
+            Some(anyhow::anyhow!("context cancelled"))
+        } else if self.is_deadline_exceeded() {
+            Some(anyhow::anyhow!("context deadline exceeded"))
+        } else {
+            None
+        }
+    }
+
+    /// Run an operation with cancellation and deadline support.
+    /// Returns an error if the context is cancelled or its deadline elapses before the operation completes.
     pub async fn run<F, T>(&self, future: F) -> Result<T>
     where
         F: std::future::Future<Output = Result<T>>,
     {
         let _enter = self.inner.span.enter();
 
-        tokio::select! {
-            result = future => result,
-            _ = self.cancelled() => {
-                Err(anyhow::anyhow!("context cancelled"))
+        match self.inner.deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                tokio::select! {
+                    result = future => result,
+                    _ = tokio::time::sleep(remaining) => Err(anyhow::anyhow!("context deadline exceeded")),
+                    _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
+                }
+            }
+            None => {
+                tokio::select! {
+                    result = future => result,
+                    _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
+                }
             }
         }
     }
@@ -120,6 +170,14 @@ impl IrrevocableContext {
             Err(err) => self.throw_irrecoverable(err),
         }
     }
+
+    /// Returns a cancellable child context together with a function that cancels it.
+    /// Mirrors Go's `context.WithCancel`.
+    pub fn with_cancel(&self, tag: &str) -> (Self, impl Fn()) {
+        let child = self.child(tag);
+        let token = child.inner.token.clone();
+        (child, move || token.cancel())
+    }
 }
 
 // Custom Debug implementation for better visibility into the context state
@@ -127,6 +185,7 @@ impl std::fmt::Debug for IrrevocableContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IrrevocableContext")
             .field("is_cancelled", &self.is_cancelled())
+            .field("deadline", &self.inner.deadline)
             .field("has_parent", &self.inner.parent.is_some())
             .finish()
     }
