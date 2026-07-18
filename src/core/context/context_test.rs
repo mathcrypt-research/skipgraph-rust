@@ -195,4 +195,49 @@ mod tests {
             .await
             .expect("child should be cancelled after invoking cancel closure");
     }
+
+    /// run() on an already-expired context returns the deadline error even when the
+    /// operation itself is immediately ready (guards the short-circuit / select! race)
+    #[tokio::test]
+    async fn test_run_short_circuits_when_deadline_already_passed() {
+        let ctx =
+            IrrevocableContext::with_timeout(&span_fixture(), "expired_ctx", Duration::from_millis(5));
+        // let the deadline lapse before we ever call run()
+        sleep(Duration::from_millis(20)).await;
+        assert!(ctx.is_deadline_exceeded());
+
+        // an immediately-ready future must NOT slip through on an expired context
+        let result = ctx.run(async { Ok::<i32, anyhow::Error>(42) }).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("deadline exceeded"));
+    }
+
+    /// cancellation that fires *while* run() is in-flight wins the race inside the
+    /// Some(deadline) arm — exercises select!'s `cancelled()` branch (not the short-circuit)
+    #[tokio::test]
+    async fn test_run_cancellation_beats_deadline() {
+        // generous deadline so the timer never fires; the context is live when run() starts
+        let ctx = IrrevocableContext::with_timeout(
+            &span_fixture(),
+            "cancel_vs_deadline",
+            Duration::from_secs(60),
+        );
+        let canceller = ctx.clone();
+
+        // run a long operation, and concurrently cancel shortly after it begins
+        let (result, ()) = tokio::join!(
+            ctx.run(async {
+                sleep(Duration::from_millis(200)).await;
+                Ok::<(), anyhow::Error>(())
+            }),
+            async move {
+                sleep(Duration::from_millis(10)).await;
+                canceller.cancel();
+            }
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("context cancelled"));
+    }
 }

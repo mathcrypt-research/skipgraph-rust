@@ -123,6 +123,13 @@ impl IrrevocableContext {
     {
         let _enter = self.inner.span.enter();
 
+        // Short-circuit if the context is already unusable, so an already-cancelled
+        // or already-expired context never races an immediately-ready future (which
+        // `select!` would otherwise resolve pseudo-randomly).
+        if let Some(err) = self.err() {
+            return Err(err);
+        }
+
         match self.inner.deadline {
             Some(deadline) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
@@ -173,7 +180,10 @@ impl IrrevocableContext {
 
     /// Returns a cancellable child context together with a function that cancels it.
     /// Mirrors Go's `context.WithCancel`.
-    pub fn with_cancel(&self, tag: &str) -> (Self, impl Fn()) {
+    ///
+    /// The returned closure is `Send + Sync + Clone`, so it can be moved across
+    /// threads/tasks or stored — the intended way to hand out cancel authority.
+    pub fn with_cancel(&self, tag: &str) -> (Self, impl Fn() + Send + Sync + Clone) {
         let child = self.child(tag);
         let token = child.inner.token.clone();
         (child, move || token.cancel())
