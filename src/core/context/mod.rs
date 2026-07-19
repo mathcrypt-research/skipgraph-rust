@@ -16,7 +16,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::Span;
+use tracing::{Instrument, Span};
 
 /// A cancelable context that supports parent-child hierarchies and irrecoverable error propagation.
 ///
@@ -121,31 +121,38 @@ impl IrrevocableContext {
     where
         F: std::future::Future<Output = Result<T>>,
     {
-        let _enter = self.inner.span.enter();
+        // Attach the context span via `.instrument()` rather than holding an
+        // `enter()` guard across the `.await`: the guard is `!Send` and would
+        // stay entered while the future is suspended, leaking the span onto
+        // whatever task resumes it. `.instrument()` enters the span only while
+        // this future is actively polled.
+        async move {
+            // Short-circuit if the context is already unusable, so an already-cancelled
+            // or already-expired context never races an immediately-ready future (which
+            // `select!` would otherwise resolve pseudo-randomly).
+            if let Some(err) = self.err() {
+                return Err(err);
+            }
 
-        // Short-circuit if the context is already unusable, so an already-cancelled
-        // or already-expired context never races an immediately-ready future (which
-        // `select!` would otherwise resolve pseudo-randomly).
-        if let Some(err) = self.err() {
-            return Err(err);
-        }
-
-        match self.inner.deadline {
-            Some(deadline) => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                tokio::select! {
-                    result = future => result,
-                    _ = tokio::time::sleep(remaining) => Err(anyhow::anyhow!("context deadline exceeded")),
-                    _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
+            match self.inner.deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    tokio::select! {
+                        result = future => result,
+                        _ = tokio::time::sleep(remaining) => Err(anyhow::anyhow!("context deadline exceeded")),
+                        _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        result = future => result,
+                        _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
+                    }
                 }
             }
-            None => {
-                tokio::select! {
-                    result = future => result,
-                    _ = self.cancelled() => Err(anyhow::anyhow!("context cancelled")),
-                }
-            }
         }
+        .instrument(self.inner.span.clone())
+        .await
     }
 
     /// Propagate an irrecoverable error up the context chain.
