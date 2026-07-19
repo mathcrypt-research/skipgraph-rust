@@ -149,4 +149,95 @@ mod tests {
             }
         }
     }
+
+    // --- ported "extras" feature tests (candidate for main integration) ---
+
+    /// a context created with a timeout fails a longer-running operation with a deadline error
+    #[tokio::test]
+    async fn test_run_respects_deadline() {
+        let ctx =
+            IrrevocableContext::with_timeout(&span_fixture(), "timeout_ctx", Duration::from_millis(10));
+
+        let result = ctx
+            .run(async {
+                sleep(Duration::from_millis(200)).await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("deadline exceeded"));
+    }
+
+    /// is_deadline_exceeded reflects the deadline crossing
+    #[tokio::test]
+    async fn test_is_deadline_exceeded() {
+        let ctx =
+            IrrevocableContext::with_timeout(&span_fixture(), "timeout_ctx", Duration::from_millis(5));
+        assert!(!ctx.is_deadline_exceeded());
+        assert!(ctx.deadline().is_some());
+        sleep(Duration::from_millis(20)).await;
+        assert!(ctx.is_deadline_exceeded());
+        assert!(ctx.err().is_some());
+    }
+
+    /// with_cancel returns a child plus a closure that cancels it
+    #[tokio::test]
+    async fn test_with_cancel_closure() {
+        let root = IrrevocableContext::new(&span_fixture(), "cancel_root");
+        let (child, cancel) = root.with_cancel("cancel_child");
+
+        assert!(!child.is_cancelled());
+        cancel();
+
+        let child_clone = child.clone();
+        wait_until(move || child_clone.is_cancelled(), Duration::from_millis(100))
+            .await
+            .expect("child should be cancelled after invoking cancel closure");
+    }
+
+    /// run() on an already-expired context returns the deadline error even when the
+    /// operation itself is immediately ready (guards the short-circuit / select! race)
+    #[tokio::test]
+    async fn test_run_short_circuits_when_deadline_already_passed() {
+        let ctx =
+            IrrevocableContext::with_timeout(&span_fixture(), "expired_ctx", Duration::from_millis(5));
+        // let the deadline lapse before we ever call run()
+        sleep(Duration::from_millis(20)).await;
+        assert!(ctx.is_deadline_exceeded());
+
+        // an immediately-ready future must NOT slip through on an expired context
+        let result = ctx.run(async { Ok::<i32, anyhow::Error>(42) }).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("deadline exceeded"));
+    }
+
+    /// cancellation that fires *while* run() is in-flight wins the race inside the
+    /// Some(deadline) arm — exercises select!'s `cancelled()` branch (not the short-circuit)
+    #[tokio::test]
+    async fn test_run_cancellation_beats_deadline() {
+        // generous deadline so the timer never fires; the context is live when run() starts
+        let ctx = IrrevocableContext::with_timeout(
+            &span_fixture(),
+            "cancel_vs_deadline",
+            Duration::from_secs(60),
+        );
+        let canceller = ctx.clone();
+
+        // run a long operation, and concurrently cancel shortly after it begins
+        let (result, ()) = tokio::join!(
+            ctx.run(async {
+                sleep(Duration::from_millis(200)).await;
+                Ok::<(), anyhow::Error>(())
+            }),
+            async move {
+                sleep(Duration::from_millis(10)).await;
+                canceller.cancel();
+            }
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("context cancelled"));
+    }
 }
