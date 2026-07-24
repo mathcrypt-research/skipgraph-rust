@@ -155,8 +155,11 @@ mod tests {
     /// a context created with a timeout fails a longer-running operation with a deadline error
     #[tokio::test]
     async fn test_run_respects_deadline() {
-        let ctx =
-            IrrevocableContext::with_timeout(&span_fixture(), "timeout_ctx", Duration::from_millis(10));
+        let ctx = IrrevocableContext::with_timeout(
+            &span_fixture(),
+            "timeout_ctx",
+            Duration::from_millis(10),
+        );
 
         let result = ctx
             .run(async {
@@ -166,14 +169,20 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("deadline exceeded"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("deadline exceeded"));
     }
 
     /// is_deadline_exceeded reflects the deadline crossing
     #[tokio::test]
     async fn test_is_deadline_exceeded() {
-        let ctx =
-            IrrevocableContext::with_timeout(&span_fixture(), "timeout_ctx", Duration::from_millis(5));
+        let ctx = IrrevocableContext::with_timeout(
+            &span_fixture(),
+            "timeout_ctx",
+            Duration::from_millis(5),
+        );
         assert!(!ctx.is_deadline_exceeded());
         assert!(ctx.deadline().is_some());
         sleep(Duration::from_millis(20)).await;
@@ -191,17 +200,23 @@ mod tests {
         cancel();
 
         let child_clone = child.clone();
-        wait_until(move || child_clone.is_cancelled(), Duration::from_millis(100))
-            .await
-            .expect("child should be cancelled after invoking cancel closure");
+        wait_until(
+            move || child_clone.is_cancelled(),
+            Duration::from_millis(100),
+        )
+        .await
+        .expect("child should be cancelled after invoking cancel closure");
     }
 
     /// run() on an already-expired context returns the deadline error even when the
     /// operation itself is immediately ready (guards the short-circuit / select! race)
     #[tokio::test]
     async fn test_run_short_circuits_when_deadline_already_passed() {
-        let ctx =
-            IrrevocableContext::with_timeout(&span_fixture(), "expired_ctx", Duration::from_millis(5));
+        let ctx = IrrevocableContext::with_timeout(
+            &span_fixture(),
+            "expired_ctx",
+            Duration::from_millis(5),
+        );
         // let the deadline lapse before we ever call run()
         sleep(Duration::from_millis(20)).await;
         assert!(ctx.is_deadline_exceeded());
@@ -210,7 +225,10 @@ mod tests {
         let result = ctx.run(async { Ok::<i32, anyhow::Error>(42) }).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("deadline exceeded"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("deadline exceeded"));
     }
 
     /// cancellation that fires *while* run() is in-flight wins the race inside the
@@ -238,6 +256,9 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("context cancelled"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("context cancelled"));
     }
 }

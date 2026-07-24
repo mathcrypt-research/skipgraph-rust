@@ -1,7 +1,10 @@
 pub mod mock;
 mod processor;
 
-use crate::core::{IdSearchReq, IdSearchRes, Identifier};
+use crate::core::{
+    BuddyReq, CheckNeighborReq, IdSearchReq, IdSearchRes, Identifier, LinkReq, LinkRes,
+    MaxLevelReq, MaxLevelRes, NeighborReq, NeighborRes,
+};
 #[allow(unused)]
 pub use processor::MessageProcessor;
 
@@ -9,9 +12,28 @@ pub use processor::MessageProcessor;
 /// Event is an application-layer semantic contrast to the lower-level transport-layer Message struct.
 #[derive(Debug, Clone)]
 pub enum Event {
-    TestMessage(String), // A payload for testing purposes, it is a simple string event, and is not used in production.
-    SearchByIdRequest(IdSearchReq), // A payload representing an identifier search request.
-    SearchByIdResponse(IdSearchRes), // A payload representing an identifier search response.
+    /// a payload for testing purposes: a simple string event, not used in production.
+    TestMessage(String),
+    /// a payload representing an identifier search request.
+    SearchByIdRequest(IdSearchReq),
+    /// a payload representing an identifier search response.
+    SearchByIdResponse(IdSearchRes),
+    /// a request for the receiver's highest populated lookup-table level.
+    GetMaxLevelOp(MaxLevelReq),
+    /// the response carrying the responder's highest populated lookup-table level.
+    RetMaxLevelOp(MaxLevelRes),
+    /// a request for the receiver's neighbor entry at a given level and direction.
+    GetNeighborOp(NeighborReq),
+    /// the response carrying the queried neighbor entry, if any.
+    RetNeighborOp(NeighborRes),
+    /// a forwardable request to link the candidate at the receiver's given side and level.
+    GetLinkOp(LinkReq),
+    /// a link confirmation reply; also reused as a repair push correction.
+    SetLinkOp(LinkRes),
+    /// a forwardable stage-2 request for a prefix-matching neighbor at a given level.
+    BuddyOp(BuddyReq),
+    /// a forwardable periodic repair probe checking backpointer consistency.
+    CheckNeighborOp(CheckNeighborReq),
 }
 
 /// Core event processing logic that implementations must provide.
