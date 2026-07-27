@@ -7,7 +7,7 @@ mod array_lookup_table_test;
 /// LookupTableLevel represents level of a lookup table. entry in the table.
 pub type LookupTableLevel = usize;
 
-/// outcome of a [`LookupTable::try_link`] compare-then-act decision.
+/// Outcome of a [`LookupTable::try_link`] compare-then-act decision.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LinkOutcome {
     /// the candidate was inserted at the requested `(level, direction)` slot: the slot was
@@ -51,7 +51,7 @@ pub trait LookupTable: Send + Sync {
     /// `candidate` happen as one indivisible step with respect to any other concurrent call on
     /// the same `(level, direction)` slot — no caller can observe or race a partial decision.
     ///
-    /// `direction` is receiver-owned, never re-interpreted hop-to-hop: it always names this
+    /// The `direction` parameter is receiver-owned, never re-interpreted hop-to-hop: it always names this
     /// node's own slot (`Direction::Right` this node's own right slot, holding neighbors with
     /// larger identifiers; `Direction::Left` its own left slot), never something relative to a
     /// caller or hop. an existing entry sits strictly between this node and `candidate` when,
