@@ -10,11 +10,11 @@ pub type LookupTableLevel = usize;
 /// Outcome of a [`LookupTable::try_link`] compare-then-act decision.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LinkOutcome {
-    /// the candidate was inserted at the requested `(level, direction)` slot: the slot was
+    /// The candidate was inserted at the requested `(level, direction)` slot: the slot was
     /// empty, or its previous occupant did not sit strictly between this node and the
     /// candidate on that side, so the candidate is now the entry there.
     LinkedDirectly,
-    /// the table was left untouched: the carried identity is the existing entry at
+    /// The table was left untouched: the carried identity is the existing entry at
     /// `(level, direction)`, and it sits strictly between this node and the candidate on that
     /// side — it is closer to the candidate's true position, so the link request belongs there
     /// instead.
@@ -43,18 +43,18 @@ pub trait LookupTable: Send + Sync {
         direction: Direction,
     ) -> anyhow::Result<Option<Identity>>;
 
-    /// atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
+    /// Atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
     /// whether an existing neighbor there already sits strictly between this node and
     /// `candidate` on that side and the request should be forwarded to it instead.
     ///
-    /// the decision is atomic: inspecting the current entry and, when accepting, inserting
+    /// The decision is atomic: inspecting the current entry and, when accepting, inserting
     /// `candidate` happen as one indivisible step with respect to any other concurrent call on
     /// the same `(level, direction)` slot — no caller can observe or race a partial decision.
     ///
     /// The `direction` parameter is receiver-owned, never re-interpreted hop-to-hop: it always names this
-    /// node's own slot (`Direction::Right` this node's own right slot, holding neighbors with
-    /// larger identifiers; `Direction::Left` its own left slot), never something relative to a
-    /// caller or hop. an existing entry sits strictly between this node and `candidate` when,
+    /// node's own slot (`Direction::Right` is this node's own right slot, holding neighbors with
+    /// larger identifiers; `Direction::Left` is its own left slot), never something relative to a
+    /// caller or hop. An existing entry sits strictly between this node and `candidate` when,
     /// for `Direction::Right`, `existing.id() < candidate.id()`; for `Direction::Left`,
     /// `existing.id() > candidate.id()`:
     ///
