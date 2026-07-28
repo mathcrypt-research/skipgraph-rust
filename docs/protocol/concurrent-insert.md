@@ -162,8 +162,11 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
    end of Stage 1. This is expected, not a bug — see Section 5.3, healed by Algorithm 8.
 
 8. Each `GetLinkOp` is handled via `change_neighbor`/`try_link` (Section 4); the terminal accepting
-   node replies `SetLinkOp{ nonce, side, level: 0, linked: Some(accepting_node's Identity) }` directly
-   to `u`. `u` applies each reply to its own table via the same `try_link` primitive (Section 4) — there
+   node replies `SetLinkOp{ nonce, side: opposite(request.side), level: 0, linked:
+   Some(accepting_node's Identity) }` directly to `u`. `side` is receiver-owned (Section 2), so the
+   reply names the slot in `u`'s **own** table — the mirror of the slot `u` was just installed into —
+   hence the explicit flip, identical to the `opposite(side)` Section 6.2 writes for repair
+   corrections. `u` applies each reply to its own table via the same `try_link` primitive (Section 4) — there
    is exactly one code path in this design that ever writes a lookup-table entry, whether the write is
    `u` installing its own neighbor, a peer installing `u`, or a repair correction (Section 6).
 
@@ -238,7 +241,9 @@ if v.neighbor[side][level] exists AND v.neighbor[side][level].key `cmp` u.key:
     forward the link-request to v.neighbor[side][level]
 else:
     v.neighbor[side][level] = u
-    reply to u confirming the link (SetLinkOp{ side, level, linked: v's identity })
+    reply to u confirming the link (SetLinkOp{ side: opposite(side), level, linked: v's identity })
+        # side is receiver-owned (Section 2): the reply names u's own slot, the mirror of the
+        # slot u was installed into here — same flip Section 6.2 writes for repair corrections
 ```
 
 The request moves monotonically toward `u`'s true position and self-corrects around concurrent
