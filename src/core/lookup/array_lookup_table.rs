@@ -1,4 +1,4 @@
-use crate::core::lookup::{LookupTable, LookupTableLevel};
+use crate::core::lookup::{LinkOutcome, LookupTable, LookupTableLevel};
 use crate::core::model;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
@@ -164,6 +164,70 @@ impl LookupTable for ArrayLookupTable {
         );
 
         Ok(entry)
+    }
+
+    /// Atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
+    /// whether the existing entry there already sits strictly between this node and `candidate`
+    /// and the request should be forwarded. Runs entirely under a single `inner.write()` guard —
+    /// the compare, the decision, and the (conditional) write all happen under one lock
+    /// acquisition.
+    ///
+    /// This method never calls `get_entry`/`update_entry`, whose separately-locked critical
+    /// sections could not be composed into one atomic decision: two concurrent callers linking
+    /// the same `(level, direction)` slot could both read the same stale entry under their own
+    /// `get_entry` call, both independently decide to insert, and both call `update_entry` —
+    /// the second silently clobbers the first, with no forwarding ever evaluated against the
+    /// true post-first-write state.
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome> {
+        if level >= LOOKUP_TABLE_LEVELS {
+            return Err(anyhow!(
+                "position is larger than the max lookup table entry number: {}",
+                level
+            ));
+        }
+
+        let mut inner = self.inner.write();
+
+        let existing = match direction {
+            Direction::Left => inner.left[level],
+            Direction::Right => inner.right[level],
+        };
+
+        // an existing entry sits strictly between this node and the candidate when, for
+        // Direction::Right, existing.id() < candidate.id(); for Direction::Left,
+        // existing.id() > candidate.id() — it is then closer to the candidate's true position
+        // than this node is, so the slot is left untouched and the decision is to forward.
+        let outcome = match (existing, direction) {
+            (Some(existing), Direction::Right) if existing.id() < candidate.id() => {
+                LinkOutcome::Forward(existing)
+            }
+            (Some(existing), Direction::Left) if existing.id() > candidate.id() => {
+                LinkOutcome::Forward(existing)
+            }
+            _ => {
+                match direction {
+                    Direction::Left => inner.left[level] = Some(candidate),
+                    Direction::Right => inner.right[level] = Some(candidate),
+                }
+                LinkOutcome::LinkedDirectly
+            }
+        };
+
+        // Log the try_link decision
+        tracing::trace!(
+            "try_link decision at level {} in direction {}: candidate {}, outcome {:?}",
+            level,
+            direction,
+            candidate.id(),
+            outcome
+        );
+
+        Ok(outcome)
     }
 
     /// Dynamically compares the lookup table with another for equality.

@@ -2,7 +2,7 @@ use fixedstr::{str128, str8};
 use std::fmt::Debug;
 
 /// Represents a networking address; composed of host + port
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Address {
     host: str128, // up to 128 bytes (on stack)
     port: str8,   // up to 8 bytes (on stack)

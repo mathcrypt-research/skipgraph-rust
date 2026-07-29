@@ -7,6 +7,20 @@ mod array_lookup_table_test;
 /// LookupTableLevel represents level of a lookup table. entry in the table.
 pub type LookupTableLevel = usize;
 
+/// Outcome of a [`LookupTable::try_link`] compare-then-act decision.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LinkOutcome {
+    /// The candidate was inserted at the requested `(level, direction)` slot: the slot was
+    /// empty, or its previous occupant did not sit strictly between this node and the
+    /// candidate on that side, so the candidate is now the entry there.
+    LinkedDirectly,
+    /// The table was left untouched: the carried identity is the existing entry at
+    /// `(level, direction)`, and it sits strictly between this node and the candidate on that
+    /// side — it is closer to the candidate's true position, so the link request belongs there
+    /// instead.
+    Forward(Identity),
+}
+
 /// LookupTable is the core view of Skip Graph node towards the network.
 pub trait LookupTable: Send + Sync {
     /// Update the entry at the given level and direction.
@@ -28,6 +42,46 @@ pub trait LookupTable: Send + Sync {
         level: LookupTableLevel,
         direction: Direction,
     ) -> anyhow::Result<Option<Identity>>;
+
+    /// Atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
+    /// whether an existing neighbor there already sits strictly between this node and
+    /// `candidate` on that side and the request should be forwarded to it instead.
+    ///
+    /// The decision is atomic: inspecting the current entry and, when accepting, inserting
+    /// `candidate` happen as one indivisible step with respect to any other concurrent call on
+    /// the same `(level, direction)` slot — no caller can observe or race a partial decision.
+    ///
+    /// The `direction` parameter is receiver-owned, never re-interpreted hop-to-hop: it always names this
+    /// node's own slot (`Direction::Right` is this node's own right slot, holding neighbors with
+    /// larger identifiers; `Direction::Left` is its own left slot), never something relative to a
+    /// caller or hop. An existing entry sits strictly between this node and `candidate` when,
+    /// for `Direction::Right`, `existing.id() < candidate.id()`; for `Direction::Left`,
+    /// `existing.id() > candidate.id()`:
+    ///
+    /// - if it does: this node's own entry at `(level, direction)` is left unchanged, and
+    ///   [`LinkOutcome::Forward`] carrying that existing neighbor is returned — the caller
+    ///   should retry the link request against that neighbor instead.
+    /// - otherwise (the slot is empty, or the existing entry does not sit strictly between):
+    ///   `candidate` is inserted into this node's own entry at `(level, direction)`, and
+    ///   [`LinkOutcome::LinkedDirectly`] is returned.
+    ///
+    /// # Preconditions
+    ///
+    /// The lookup table has no notion of this node's own identifier, so it cannot verify that
+    /// `candidate` actually belongs on the `direction` side of this node — callers must ensure
+    /// that before calling. The comparison inside `try_link` only ever weighs the existing entry
+    /// against `candidate`, never against this node itself, so a violated precondition installs
+    /// an out-of-order neighbor silently rather than returning an error.
+    ///
+    /// # Errors
+    ///
+    /// returns an error when `level` is out of bounds.
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome>;
 
     /// Dynamically compares the lookup table with another for equality.
     fn equal(&self, other: &dyn LookupTable) -> bool;
