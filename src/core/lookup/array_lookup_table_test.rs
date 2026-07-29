@@ -3,7 +3,7 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::*;
-    use crate::core::{model, ArrayLookupTable, LookupTable, LOOKUP_TABLE_LEVELS};
+    use crate::core::{model, ArrayLookupTable, LinkOutcome, LookupTable, LOOKUP_TABLE_LEVELS};
     use std::collections::HashMap;
 
     #[test]
@@ -92,6 +92,114 @@ mod tests {
         lt.update_entry(id2, 0, Direction::Left).unwrap();
 
         assert_eq!(Some(id2), lt.get_entry(0, Direction::Left).unwrap());
+    }
+
+    /// (a) try_link into an empty slot links directly and inserts the candidate, on both sides.
+    #[test]
+    fn test_try_link_empty_slot_links_directly() {
+        let lt = ArrayLookupTable::new();
+        let right_candidate = random_identity();
+        let left_candidate = random_identity();
+
+        let outcome = lt.try_link(0, Direction::Right, right_candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(
+            lt.get_entry(0, Direction::Right).unwrap(),
+            Some(right_candidate)
+        );
+
+        let outcome = lt.try_link(0, Direction::Left, left_candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(
+            lt.get_entry(0, Direction::Left).unwrap(),
+            Some(left_candidate)
+        );
+    }
+
+    /// (b, Right) an existing right neighbor that does NOT sit strictly between self and the
+    /// candidate (existing.id() > candidate.id()) is overwritten: try_link links directly and
+    /// get_entry afterward reflects the new candidate, not the old neighbor.
+    #[test]
+    fn test_try_link_existing_not_between_overwrites_right() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_greater_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Right, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(candidate));
+    }
+
+    /// (b, Left) an existing left neighbor that does NOT sit strictly between self and the
+    /// candidate (existing.id() < candidate.id()) is overwritten: try_link links directly and
+    /// get_entry afterward reflects the new candidate, not the old neighbor.
+    #[test]
+    fn test_try_link_existing_not_between_overwrites_left() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_less_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Left, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(candidate));
+    }
+
+    /// (c, Right) an existing right neighbor that sits strictly between self and the candidate
+    /// (existing.id() < candidate.id()) causes try_link to forward instead of linking: the table
+    /// is left unchanged, still holding the existing neighbor.
+    #[test]
+    fn test_try_link_existing_between_forwards_right() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_less_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Right, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(existing));
+    }
+
+    /// (c, Left) an existing left neighbor that sits strictly between self and the candidate
+    /// (existing.id() > candidate.id()) causes try_link to forward instead of linking: the table
+    /// is left unchanged, still holding the existing neighbor.
+    #[test]
+    fn test_try_link_existing_between_forwards_left() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_greater_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Left, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(existing));
+    }
+
+    /// (d) try_link at an out-of-range level returns an error, matching the other lookup-table
+    /// accessors' bounds-checking behavior.
+    #[test]
+    fn test_try_link_out_of_bound_level_errors() {
+        let lt = ArrayLookupTable::new();
+        let candidate = random_identity();
+
+        let result = lt.try_link(LOOKUP_TABLE_LEVELS, Direction::Right, candidate);
+        assert!(result.is_err());
+
+        let result = lt.try_link(LOOKUP_TABLE_LEVELS, Direction::Left, candidate);
+        assert!(result.is_err());
     }
 
     #[test]
