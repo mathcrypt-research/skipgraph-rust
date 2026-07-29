@@ -65,6 +65,14 @@ pub trait LookupTable: Send + Sync {
     ///   `candidate` is inserted into this node's own entry at `(level, direction)`, and
     ///   [`LinkOutcome::LinkedDirectly`] is returned.
     ///
+    /// # Preconditions
+    ///
+    /// The lookup table has no notion of this node's own identifier, so it cannot verify that
+    /// `candidate` actually belongs on the `direction` side of this node — callers must ensure
+    /// that before calling. The comparison inside `try_link` only ever weighs the existing entry
+    /// against `candidate`, never against this node itself, so a violated precondition installs
+    /// an out-of-order neighbor silently rather than returning an error.
+    ///
     /// # Errors
     ///
     /// returns an error when `level` is out of bounds.
