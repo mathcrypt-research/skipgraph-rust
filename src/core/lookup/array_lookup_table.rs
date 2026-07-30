@@ -1,4 +1,4 @@
-use crate::core::lookup::{LinkOutcome, LookupTable, LookupTableLevel};
+use crate::core::lookup::{LinkOutcome, LookupTable, LookupTableLevel, RelinkOutcome};
 use crate::core::model;
 use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
@@ -224,6 +224,64 @@ impl LookupTable for ArrayLookupTable {
             level,
             direction,
             candidate.id(),
+            outcome
+        );
+
+        Ok(outcome)
+    }
+
+    /// Implements [`LookupTable::try_relink`] — see that doc for what `claimant` means and what
+    /// each [`RelinkOutcome`] variant represents. Runs entirely under a single `inner.write()`
+    /// guard, for the same reason `try_link` does: composing separately-locked
+    /// `get_entry`/`update_entry` calls would reopen a race between two concurrent repair probes
+    /// for the same slot, each reading the same stale entry and clobbering the other's write
+    /// without ever forwarding against the true post-write state.
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome> {
+        if level >= LOOKUP_TABLE_LEVELS {
+            return Err(anyhow!(
+                "position is larger than the max lookup table entry number: {}",
+                level
+            ));
+        }
+
+        let mut inner = self.inner.write();
+
+        let existing = match direction {
+            Direction::Left => inner.left[level],
+            Direction::Right => inner.right[level],
+        };
+
+        // three-way decision against the single read of `existing` above, all inside this one
+        // write-lock critical section: already-equal is a no-op; strictly-between (same
+        // per-direction comparison as try_link) forwards; anything else relinks and evicts.
+        let outcome = match (existing, direction) {
+            (Some(existing), _) if existing == claimant => RelinkOutcome::AlreadyConsistent,
+            (Some(existing), Direction::Right) if existing.id() < claimant.id() => {
+                RelinkOutcome::Forward(existing)
+            }
+            (Some(existing), Direction::Left) if existing.id() > claimant.id() => {
+                RelinkOutcome::Forward(existing)
+            }
+            (evicted, _) => {
+                match direction {
+                    Direction::Left => inner.left[level] = Some(claimant),
+                    Direction::Right => inner.right[level] = Some(claimant),
+                }
+                RelinkOutcome::Relinked { evicted }
+            }
+        };
+
+        // Log the try_relink decision
+        tracing::trace!(
+            "try_relink decision at level {} in direction {}: claimant {}, outcome {:?}",
+            level,
+            direction,
+            claimant.id(),
             outcome
         );
 

@@ -21,6 +21,26 @@ pub enum LinkOutcome {
     Forward(Identity),
 }
 
+/// Outcome of a [`LookupTable::try_relink`] compare-then-act decision — the repair counterpart
+/// of [`LinkOutcome`], returned when a node (the "claimant") checks or re-asserts a link it
+/// believes it should already hold, rather than requesting a brand-new one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RelinkOutcome {
+    /// The slot already points to the claimant, so the pointer was never actually wrong:
+    /// nothing is written and no correction is needed. `try_link` has no equivalent outcome,
+    /// since a first-time candidate is never already installed.
+    AlreadyConsistent,
+    /// The table was left untouched: the carried identity is the existing entry at
+    /// `(level, direction)`, and it sits strictly between this node and the claimant on that
+    /// side — it is closer to the claimant's true position, so it is not this node's call to
+    /// make, and the repair check should be retried against that neighbor instead.
+    Forward(Identity),
+    /// The slot was empty, or its occupant sat on the wrong side (farther from the claimant
+    /// than this node is): the claimant is installed as the new entry, evicting whatever
+    /// occupied the slot before (`evicted` is `None` if it was empty). 
+    Relinked { evicted: Option<Identity> },
+}
+
 /// LookupTable is the core view of Skip Graph node towards the network.
 pub trait LookupTable: Send + Sync {
     /// Update the entry at the given level and direction.
@@ -82,6 +102,57 @@ pub trait LookupTable: Send + Sync {
         direction: Direction,
         candidate: Identity,
     ) -> anyhow::Result<LinkOutcome>;
+
+    /// Atomically decides whether `claimant` should become — or already is — the neighbor at
+    /// `(level, direction)`.
+    ///
+    /// This is the repair counterpart of [`Self::try_link`], and the two differ in what the
+    /// caller is asking:
+    ///
+    /// - `try_link`'s `candidate` is a node requesting a link **for the first time** (e.g.
+    ///   joining) — it is never already installed, so the only choices are to accept it or
+    ///   forward the request onward.
+    /// - `try_relink`'s `claimant` is a node **checking or re-asserting a link it believes it
+    ///   should already hold**, run periodically by a background repair sweep to catch and fix
+    ///   pointers that drifted out of sync — e.g. silently overwritten by a concurrent, otherwise
+    ///   individually-correct `try_link` call landing on the same slot. Because the claimant may
+    ///   already be correctly linked, there is a third possible outcome `try_link` has no use for.
+    ///
+    /// The decision is atomic and `direction` is receiver-owned, exactly as for `try_link` (see
+    /// its docs for those general rules and for the "strictly between" comparison, which is
+    /// identical here). Given the current entry at `(level, direction)`:
+    ///
+    /// - **it already equals `claimant`** — the pointer was never actually wrong: nothing is
+    ///   written, [`RelinkOutcome::AlreadyConsistent`] is returned. This is what makes a repair
+    ///   sweep over an already-healthy graph produce zero writes and zero further messages.
+    /// - **it sits strictly between this node and `claimant`** — that neighbor is closer to
+    ///   `claimant`'s true position, so it is not this node's call to make: the table is left
+    ///   untouched and [`RelinkOutcome::Forward`] carries that neighbor, for the caller to retry
+    ///   the check against.
+    /// - **otherwise** (the slot is empty, or its occupant sits on the wrong side, farther from
+    ///   `claimant` than this node is) — `claimant` is installed as the new entry, and
+    ///   [`RelinkOutcome::Relinked`] reports whatever was evicted (`None` if the slot was empty).
+    ///   This method does not act on that eviction itself — it only reports it. The intent is
+    ///   forward-looking: a future caller-side repair handler is expected to take the evicted
+    ///   identity and issue a fresh check against *it*, so a fix can cascade outward and heal a
+    ///   whole chain of stale pointers from a single triggering probe, not just the one slot
+    ///   checked here. That handler does not yet exist in this codebase.
+    ///
+    /// # Preconditions
+    ///
+    /// Same as `try_link`: the lookup table has no notion of this node's own identifier, so
+    /// callers must ensure `claimant` actually belongs on the `direction` side before calling —
+    /// a violated precondition installs an out-of-order neighbor silently rather than erroring.
+    ///
+    /// # Errors
+    ///
+    /// returns an error when `level` is out of bounds.
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome>;
 
     /// Dynamically compares the lookup table with another for equality.
     fn equal(&self, other: &dyn LookupTable) -> bool;

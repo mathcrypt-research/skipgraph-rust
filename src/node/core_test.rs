@@ -8,7 +8,7 @@ use crate::core::testutil::fixtures::{
 };
 use crate::core::{
     ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableLevel,
-    LOOKUP_TABLE_LEVELS,
+    RelinkOutcome, LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
@@ -366,6 +366,15 @@ fn test_search_by_id_error_propagation() {
             _: Direction,
             _: Identity,
         ) -> anyhow::Result<LinkOutcome> {
+            todo!()
+        }
+
+        fn try_relink(
+            &self,
+            _: LookupTableLevel,
+            _: Direction,
+            _: Identity,
+        ) -> anyhow::Result<RelinkOutcome> {
             todo!()
         }
 
