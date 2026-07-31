@@ -35,9 +35,10 @@ pub enum RelinkOutcome {
     /// side — it is closer to the claimant's true position, so it is not this node's call to
     /// make, and the repair check should be retried against that neighbor instead.
     Forward(Identity),
-    /// The slot was empty, or its occupant sat on the wrong side (farther from the claimant
-    /// than this node is): the claimant is installed as the new entry, evicting whatever
-    /// occupied the slot before (`evicted` is `None` if it was empty). 
+    /// The slot was empty, or its occupant was neither the claimant nor strictly between this
+    /// node and the claimant (the same comparison `try_link` uses): the claimant is installed
+    /// as the new entry, evicting whatever occupied the slot before (`evicted` is `None` if it
+    /// was empty).
     Relinked { evicted: Option<Identity> },
 }
 
@@ -129,8 +130,8 @@ pub trait LookupTable: Send + Sync {
     ///   `claimant`'s true position, so it is not this node's call to make: the table is left
     ///   untouched and [`RelinkOutcome::Forward`] carries that neighbor, for the caller to retry
     ///   the check against.
-    /// - **otherwise** (the slot is empty, or its occupant sits on the wrong side, farther from
-    ///   `claimant` than this node is) — `claimant` is installed as the new entry, and
+    /// - **otherwise** (the slot is empty, or its occupant is neither `claimant` nor strictly
+    ///   between this node and `claimant`) — `claimant` is installed as the new entry, and
     ///   [`RelinkOutcome::Relinked`] reports whatever was evicted (`None` if the slot was empty).
     ///   This method does not act on that eviction itself — it only reports it. The intent is
     ///   forward-looking: a future caller-side repair handler is expected to take the evicted
