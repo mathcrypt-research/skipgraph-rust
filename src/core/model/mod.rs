@@ -5,5 +5,6 @@ pub mod address;
 pub mod direction;
 pub mod identifier;
 pub mod identity;
+pub(crate) mod join;
 pub mod memvec;
 pub(crate) mod search;

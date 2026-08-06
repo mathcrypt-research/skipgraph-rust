@@ -7,7 +7,8 @@ use crate::core::testutil::fixtures::{
     span_fixture,
 };
 use crate::core::{
-    ArrayLookupTable, IdSearchReq, Identifier, LookupTable, LookupTableLevel, LOOKUP_TABLE_LEVELS,
+    ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableLevel,
+    RelinkOutcome, LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
@@ -357,6 +358,24 @@ fn test_search_by_id_error_propagation() {
 
         fn get_entry(&self, _: usize, _: Direction) -> anyhow::Result<Option<Identity>> {
             Err(anyhow!("simulated lookup table error"))
+        }
+
+        fn try_link(
+            &self,
+            _: LookupTableLevel,
+            _: Direction,
+            _: Identity,
+        ) -> anyhow::Result<LinkOutcome> {
+            todo!()
+        }
+
+        fn try_relink(
+            &self,
+            _: LookupTableLevel,
+            _: Direction,
+            _: Identity,
+        ) -> anyhow::Result<RelinkOutcome> {
+            todo!()
         }
 
         fn equal(&self, _: &dyn LookupTable) -> bool {

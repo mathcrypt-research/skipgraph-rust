@@ -3,7 +3,9 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::*;
-    use crate::core::{model, ArrayLookupTable, LookupTable, LOOKUP_TABLE_LEVELS};
+    use crate::core::{
+        model, ArrayLookupTable, LinkOutcome, LookupTable, RelinkOutcome, LOOKUP_TABLE_LEVELS,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -92,6 +94,234 @@ mod tests {
         lt.update_entry(id2, 0, Direction::Left).unwrap();
 
         assert_eq!(Some(id2), lt.get_entry(0, Direction::Left).unwrap());
+    }
+
+    /// (a) try_link into an empty slot links directly and inserts the candidate, on both sides.
+    #[test]
+    fn test_try_link_empty_slot_links_directly() {
+        let lt = ArrayLookupTable::new();
+        let right_candidate = random_identity();
+        let left_candidate = random_identity();
+
+        let outcome = lt.try_link(0, Direction::Right, right_candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(
+            lt.get_entry(0, Direction::Right).unwrap(),
+            Some(right_candidate)
+        );
+
+        let outcome = lt.try_link(0, Direction::Left, left_candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(
+            lt.get_entry(0, Direction::Left).unwrap(),
+            Some(left_candidate)
+        );
+    }
+
+    /// (b, Right) an existing right neighbor that does NOT sit strictly between self and the
+    /// candidate (existing.id() > candidate.id()) is overwritten: try_link links directly and
+    /// get_entry afterward reflects the new candidate, not the old neighbor.
+    #[test]
+    fn test_try_link_existing_not_between_overwrites_right() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_greater_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Right, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(candidate));
+    }
+
+    /// (b, Left) an existing left neighbor that does NOT sit strictly between self and the
+    /// candidate (existing.id() < candidate.id()) is overwritten: try_link links directly and
+    /// get_entry afterward reflects the new candidate, not the old neighbor.
+    #[test]
+    fn test_try_link_existing_not_between_overwrites_left() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_less_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Left, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(candidate));
+    }
+
+    /// (c, Right) an existing right neighbor that sits strictly between self and the candidate
+    /// (existing.id() < candidate.id()) causes try_link to forward instead of linking: the table
+    /// is left unchanged, still holding the existing neighbor.
+    #[test]
+    fn test_try_link_existing_between_forwards_right() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_less_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Right, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(existing));
+    }
+
+    /// (c, Left) an existing left neighbor that sits strictly between self and the candidate
+    /// (existing.id() > candidate.id()) causes try_link to forward instead of linking: the table
+    /// is left unchanged, still holding the existing neighbor.
+    #[test]
+    fn test_try_link_existing_between_forwards_left() {
+        let lt = ArrayLookupTable::new();
+        let candidate_id = random_identifier();
+        let candidate = Identity::new(candidate_id, random_membership_vector(), random_address());
+
+        let existing_id = random_identifier_greater_than(&candidate_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+
+        let outcome = lt.try_link(0, Direction::Left, candidate).unwrap();
+        assert_eq!(outcome, LinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(existing));
+    }
+
+    /// (d) try_link at an out-of-range level returns an error, matching the other lookup-table
+    /// accessors' bounds-checking behavior.
+    #[test]
+    fn test_try_link_out_of_bound_level_errors() {
+        let lt = ArrayLookupTable::new();
+        let candidate = random_identity();
+
+        let result = lt.try_link(LOOKUP_TABLE_LEVELS, Direction::Right, candidate);
+        assert!(result.is_err());
+
+        let result = lt.try_link(LOOKUP_TABLE_LEVELS, Direction::Left, candidate);
+        assert!(result.is_err());
+    }
+
+    /// (a) try_relink is a no-op returning AlreadyConsistent when the entry already equals the
+    /// claimant, on both sides.
+    #[test]
+    fn test_try_relink_already_consistent() {
+        let lt = ArrayLookupTable::new();
+        let existing = random_identity();
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+        let outcome = lt.try_relink(0, Direction::Right, existing).unwrap();
+        assert_eq!(outcome, RelinkOutcome::AlreadyConsistent);
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(existing));
+        let outcome = lt.try_relink(0, Direction::Left, existing).unwrap();
+        assert_eq!(outcome, RelinkOutcome::AlreadyConsistent);
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(existing));
+    }
+
+    /// (b, Right) an existing right neighbor strictly between self and the claimant
+    /// (existing.id() < claimant.id()) forwards instead of relinking; table unchanged.
+    #[test]
+    fn test_try_relink_existing_between_forwards_right() {
+        let lt = ArrayLookupTable::new();
+        let claimant_id = random_identifier();
+        let claimant = Identity::new(claimant_id, random_membership_vector(), random_address());
+        let existing_id = random_identifier_less_than(&claimant_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+        let outcome = lt.try_relink(0, Direction::Right, claimant).unwrap();
+        assert_eq!(outcome, RelinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(existing));
+    }
+
+    /// (b, Left) an existing left neighbor strictly between self and the claimant
+    /// (existing.id() > claimant.id()) forwards instead of relinking; table unchanged.
+    #[test]
+    fn test_try_relink_existing_between_forwards_left() {
+        let lt = ArrayLookupTable::new();
+        let claimant_id = random_identifier();
+        let claimant = Identity::new(claimant_id, random_membership_vector(), random_address());
+        let existing_id = random_identifier_greater_than(&claimant_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+        let outcome = lt.try_relink(0, Direction::Left, claimant).unwrap();
+        assert_eq!(outcome, RelinkOutcome::Forward(existing));
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(existing));
+    }
+
+    /// (c) try_relink into an empty slot relinks with no eviction, on both sides.
+    #[test]
+    fn test_try_relink_empty_slot_relinks_with_no_eviction() {
+        let lt = ArrayLookupTable::new();
+        let right_claimant = random_identity();
+        let left_claimant = random_identity();
+        let outcome = lt.try_relink(0, Direction::Right, right_claimant).unwrap();
+        assert_eq!(outcome, RelinkOutcome::Relinked { evicted: None });
+        assert_eq!(
+            lt.get_entry(0, Direction::Right).unwrap(),
+            Some(right_claimant)
+        );
+        let outcome = lt.try_relink(0, Direction::Left, left_claimant).unwrap();
+        assert_eq!(outcome, RelinkOutcome::Relinked { evicted: None });
+        assert_eq!(
+            lt.get_entry(0, Direction::Left).unwrap(),
+            Some(left_claimant)
+        );
+    }
+
+    /// (d, Right) an existing right neighbor NOT strictly between self and the claimant
+    /// (existing.id() > claimant.id()) is evicted; get_entry afterward reflects the claimant.
+    #[test]
+    fn test_try_relink_existing_not_between_evicts_right() {
+        let lt = ArrayLookupTable::new();
+        let claimant_id = random_identifier();
+        let claimant = Identity::new(claimant_id, random_membership_vector(), random_address());
+        let existing_id = random_identifier_greater_than(&claimant_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Right).unwrap();
+        let outcome = lt.try_relink(0, Direction::Right, claimant).unwrap();
+        assert_eq!(
+            outcome,
+            RelinkOutcome::Relinked {
+                evicted: Some(existing)
+            }
+        );
+        assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(claimant));
+    }
+
+    /// (d, Left) an existing left neighbor NOT strictly between self and the claimant
+    /// (existing.id() < claimant.id()) is evicted; get_entry afterward reflects the claimant.
+    #[test]
+    fn test_try_relink_existing_not_between_evicts_left() {
+        let lt = ArrayLookupTable::new();
+        let claimant_id = random_identifier();
+        let claimant = Identity::new(claimant_id, random_membership_vector(), random_address());
+        let existing_id = random_identifier_less_than(&claimant_id);
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+        lt.update_entry(existing, 0, Direction::Left).unwrap();
+        let outcome = lt.try_relink(0, Direction::Left, claimant).unwrap();
+        assert_eq!(
+            outcome,
+            RelinkOutcome::Relinked {
+                evicted: Some(existing)
+            }
+        );
+        assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(claimant));
+    }
+
+    /// (e) try_relink at an out-of-range level returns an error, matching the other
+    /// lookup-table accessors' bounds-checking behavior.
+    #[test]
+    fn test_try_relink_out_of_bound_level_errors() {
+        let lt = ArrayLookupTable::new();
+        let claimant = random_identity();
+        assert!(lt
+            .try_relink(LOOKUP_TABLE_LEVELS, Direction::Right, claimant)
+            .is_err());
+        assert!(lt
+            .try_relink(LOOKUP_TABLE_LEVELS, Direction::Left, claimant)
+            .is_err());
     }
 
     #[test]
