@@ -13,12 +13,18 @@
 //! # Cardinality contract
 //!
 //! Labels are closed enums only ([`SearchOutcome`], [`MessageType`],
-//! [`LevelBucket`]), never identifiers or other unbounded values, so the type
-//! system makes a high-cardinality label unrepresentable.
+//! [`LevelBucket`], [`Direction`]), never identifiers or other unbounded
+//! values, so the type system makes a high-cardinality label unrepresentable.
 
 mod labels;
+mod metrics;
 
 #[cfg(test)]
 mod labels_test;
 
+pub use crate::core::model::direction::Direction;
 pub use labels::{LevelBucket, MessageType, SearchOutcome};
+pub use metrics::{
+    LookupTableMetrics, LookupTableMetricsMock, NetworkMetrics, NetworkMetricsMock, NodeMetrics,
+    SearchMetrics, SearchMetricsMock,
+};
