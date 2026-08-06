@@ -29,4 +29,5 @@ pub trait NetworkMetrics: Send + Sync {
 /// The full metric surface a node records against, composing the per-subsystem traits.
 pub trait NodeMetrics: SearchMetrics + LookupTableMetrics + NetworkMetrics {}
 
+// Backends implement the three sub-traits; `NodeMetrics` follows automatically and is never implemented directly.
 impl<T> NodeMetrics for T where T: SearchMetrics + LookupTableMetrics + NetworkMetrics {}
