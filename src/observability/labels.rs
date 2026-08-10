@@ -11,6 +11,8 @@ pub enum SearchOutcome {
 }
 
 /// Type of a network message, used as a metric label. One variant per event kind.
+/// Covers only the search message types today; the rest of `Event` is added with
+/// the network instrumentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     /// A test-only string payload (not used in production).
