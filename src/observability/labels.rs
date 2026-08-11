@@ -1,7 +1,7 @@
 use crate::core::LookupTableLevel;
 
 /// Outcome of a completed identifier search, used as a metric label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SearchOutcome {
     /// A matching neighbor was returned by the search.
     Found,
@@ -13,7 +13,7 @@ pub enum SearchOutcome {
 /// Type of a network message, used as a metric label. One variant per event kind.
 /// Covers only the search message types today; the rest of `Event` is added with
 /// the network instrumentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MessageType {
     /// A test-only string payload (not used in production).
     TestMessage,
@@ -35,7 +35,7 @@ const OVERFLOW_LEVEL_FLOOR: LookupTableLevel = 256;
 /// Levels can number in the hundreds; labeling by raw level would explode
 /// cardinality, so it is bucketed. The mapping is total, with
 /// [`LevelBucket::Overflow`] catching levels at or beyond the expected maximum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LevelBucket {
     /// Levels `0..16`.
     Low,
