@@ -1,3 +1,9 @@
+//! Metric-recording traits.
+//!
+//! Parameter convention: closed-enum parameters are labels; scalar parameters
+//! (hop counts, durations) are observation values recorded as distributions,
+//! never labels.
+
 use crate::core::model::direction::Direction;
 use crate::observability::labels::{LevelBucket, MessageType, SearchOutcome};
 use std::time::Duration;
@@ -6,6 +12,7 @@ use std::time::Duration;
 #[unimock::unimock(api = SearchMetricsMock)]
 pub trait SearchMetrics: Send + Sync {
     /// Records a completed search by its outcome, hop count, and duration.
+    /// `hops` and `elapsed` are recorded as distributions, not labels.
     fn record_search(&self, outcome: SearchOutcome, hops: usize, elapsed: Duration);
 }
 
