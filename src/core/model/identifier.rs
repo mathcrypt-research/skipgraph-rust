@@ -68,16 +68,16 @@ impl Display for ComparisonContext {
             CompareGreater => write!(
                 f,
                 "{} > {} (at byte {})",
-                &hex::encode(&self.left.0[0..=self.diff_index]),
-                &hex::encode(&self.right.0[0..=self.diff_index]),
+                hex::encode(&self.left.0[0..=self.diff_index]),
+                hex::encode(&self.right.0[0..=self.diff_index]),
                 self.diff_index
             ),
             CompareEqual => write!(f, "{} == {}", self.left, self.right),
             CompareLess => write!(
                 f,
                 "{} < {} (at byte {})",
-                &hex::encode(&self.left.0[0..=self.diff_index]),
-                &hex::encode(&self.right.0[0..=self.diff_index]),
+                hex::encode(&self.left.0[0..=self.diff_index]),
+                hex::encode(&self.right.0[0..=self.diff_index]),
                 self.diff_index
             ),
         }
@@ -468,8 +468,8 @@ mod tests {
             comp.to_string(),
             format!(
                 "{} > {} (at byte {})",
-                &hex::encode(&id_random_greater.to_bytes()[0..=differing_byte_index]),
-                &hex::encode(&id_random_less.to_bytes()[0..=differing_byte_index]),
+                hex::encode(&id_random_greater.to_bytes()[0..=differing_byte_index]),
+                hex::encode(&id_random_less.to_bytes()[0..=differing_byte_index]),
                 differing_byte_index
             )
         );
@@ -485,8 +485,8 @@ mod tests {
             comp.to_string(),
             format!(
                 "{} < {} (at byte {})",
-                &hex::encode(&id_random_less.to_bytes()[0..=differing_byte_index]),
-                &hex::encode(&id_random_greater.to_bytes()[0..=differing_byte_index]),
+                hex::encode(&id_random_less.to_bytes()[0..=differing_byte_index]),
+                hex::encode(&id_random_greater.to_bytes()[0..=differing_byte_index]),
                 differing_byte_index
             )
         );
