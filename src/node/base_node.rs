@@ -312,25 +312,27 @@ impl EventProcessorCore for BaseNode {
                 Ok(())
             }
             RetMaxLevelOp(res) => {
-                let waiter = self
+                let mut request_id_map = self
                     .request_id_map
                     .lock()
-                    .expect("mutex was poisoned by a previous panic")
-                    .remove(&res.nonce);
+                    .expect("mutex was poisoned by a previous panic");
+                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::MaxLevel(_)))
+                {
+                    request_id_map.remove(&res.nonce)
+                } else {
+                    None
+                };
+                drop(request_id_map);
 
-                match waiter {
-                    Some(Waiter::MaxLevel(tx)) => {
-                        if let Err(e) = tx.send(res) {
-                            tracing::warn!(
-                                "failed to send the response to the receiver end: {:?}",
-                                e
-                            )
-                        }
+                if let Some(Waiter::MaxLevel(tx)) = waiter {
+                    if let Err(e) = tx.send(res) {
+                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
-                    // no-op: an unknown/expired nonce or a wrong waiter kind is not an error.
-                    _ => {
-                        tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
-                    }
+                } else {
+                    // no waiter at this nonce, or the entry belongs to an unrelated
+                    // `Waiter::Search` request: left untouched in the map, not this
+                    // arm's concern. log and move on.
+                    tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
                 }
 
                 Ok(())
