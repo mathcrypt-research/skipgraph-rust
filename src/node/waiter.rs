@@ -22,8 +22,8 @@ pub(super) enum Waiter {
 }
 
 /// RAII guard that unconditionally removes a nonce's waiter-map entry on drop — ties
-/// cleanup to the scope of an in-flight request (`rust-standards.md` invariant #7) so
-/// success, timeout, and send-failure exits all leave no stale entry.
+/// cleanup to the scope of an in-flight request so success, timeout, and send-failure
+/// exits all leave no stale entry.
 ///
 /// A plain `match` with a manual `.remove()` in each non-success branch (as
 /// `search_by_id` uses) is not enough here: `get_max_level` is `async`, and an `async`
