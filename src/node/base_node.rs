@@ -287,18 +287,25 @@ impl EventProcessorCore for BaseNode {
                 );
                 let _enter = span.enter();
 
-                let waiter = self
+                let mut request_id_map = self
                     .request_id_map
                     .lock()
-                    .expect("mutex was poisoned by a previous panic")
-                    .remove(&res.nonce);
+                    .expect("mutex was poisoned by a previous panic");
+                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Search(_))) {
+                    request_id_map.remove(&res.nonce)
+                } else {
+                    None
+                };
+                drop(request_id_map);
+
                 if let Some(Waiter::Search(tx)) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
                 } else {
-                    // no waiter, or an unexpected `Waiter::MaxLevel`: not this arm's
-                    // concern, log and move on.
+                    // no waiter at this nonce, or the entry belongs to an unrelated
+                    // `Waiter::MaxLevel` request: left untouched in the map, not this
+                    // arm's concern. log and move on.
                     tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
                 }
 
