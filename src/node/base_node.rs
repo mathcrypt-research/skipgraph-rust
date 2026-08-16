@@ -663,4 +663,109 @@ mod tests {
             "expected the waiter map entry to be cleaned up"
         );
     }
+
+    /// Aborting a `get_max_level` task mid-flight (before any reply is ever delivered)
+    /// still cleans up its waiter-map entry. Unlike the timeout and resolve paths, this
+    /// exercises `WaiterGuard`'s drop-on-cancellation cleanup specifically:
+    /// `JoinHandle::abort` drops the future mid-`.await` without running any of
+    /// `get_max_level`'s own branch code, so only `Drop` can be responsible for the
+    /// removal here.
+    #[tokio::test]
+    async fn test_get_max_level_cleans_up_on_cancellation() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let introducer = random_identifier();
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, introducer, "expected request sent to the introducer");
+                    match event {
+                        GetMaxLevelOp(req) => {
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_task = node.clone();
+
+        // no reply is ever delivered for this nonce: the task is cancelled instead.
+        let handle = tokio::spawn(async move {
+            node_task
+                .get_max_level(introducer, Duration::from_secs(30))
+                .await
+        });
+
+        // deterministic wait for registration: poll the shared map itself rather than
+        // just the nonce capture, so this actually confirms what `WaiterGuard` is about
+        // to clean up is present.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let registered = nonce_cell.lock().expect("mutex poisoned").is_some()
+                    && !node
+                        .request_id_map
+                        .lock()
+                        .expect("mutex poisoned")
+                        .is_empty();
+                if registered {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test timed out waiting for the waiter to register");
+
+        handle.abort();
+
+        // aborting doesn't run the cancelled future's drop glue synchronously; it runs
+        // the next time the runtime polls the task. bounded poll, not a wall-clock
+        // sleep, per this project's timeout-every-async-wait rule.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if node
+                    .request_id_map
+                    .lock()
+                    .expect("mutex poisoned")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test timed out waiting for the waiter map entry to be cleaned up after abort");
+
+        let join_result = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("test timed out waiting for the aborted task to join");
+        assert!(
+            join_result
+                .expect_err("aborted task should yield a join error")
+                .is_cancelled(),
+            "expected the join error to report cancellation"
+        );
+    }
 }
