@@ -17,7 +17,7 @@ use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::Span;
+use tracing::{Instrument, Span};
 
 // TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
 #[allow(dead_code)]
@@ -176,43 +176,50 @@ impl BaseNode {
         timeout: Duration,
     ) -> anyhow::Result<LookupTableLevel> {
         let span = tracing::trace_span!("get_max_level", introducer = ?introducer);
-        let _enter = span.enter();
 
-        let nonce = Nonce::random();
-        let (tx, rx) = oneshot::channel::<MaxLevelRes>();
+        // Attach the span via `.instrument()` rather than holding an `enter()` guard
+        // across the `.await` below: the guard is `!Send` and would stay entered while
+        // the future is suspended, leaking the span onto whatever unrelated work the
+        // executor polls on this thread in the meantime.
+        async move {
+            let nonce = Nonce::random();
+            let (tx, rx) = oneshot::channel::<MaxLevelRes>();
 
-        {
-            let mut request_id_map = self
-                .request_id_map
-                .lock()
-                .expect("mutex was poisoned by a previous panic");
-            request_id_map.insert(nonce, Waiter::MaxLevel(tx));
-        }
-        // cleans up the map entry on every exit path, including cancellation. Never read
-        // (its only job is running `Drop` at end of scope), hence the `_` prefix.
-        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
-
-        if let Err(e) = self.net.send_event(
-            introducer,
-            GetMaxLevelOp(MaxLevelReq {
-                nonce,
-                origin: self.core.id(),
-            }),
-        ) {
-            return Err(anyhow!("failed to send get max level request: {}", e));
-        }
-        tracing::info!("sent get max level request, pending response");
-
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(res)) => {
-                tracing::info!("received max level response: {:?}", res.max_level);
-                Ok(res.max_level)
+            {
+                let mut request_id_map = self
+                    .request_id_map
+                    .lock()
+                    .expect("mutex was poisoned by a previous panic");
+                request_id_map.insert(nonce, Waiter::MaxLevel(tx));
             }
-            Ok(Err(_)) => Err(anyhow!(
-                "failed to receive network response for get max level: sender dropped"
-            )),
-            Err(_) => Err(anyhow!("timed out waiting for get max level response")),
+            // cleans up the map entry on every exit path, including cancellation. Never read
+            // (its only job is running `Drop` at end of scope), hence the `_` prefix.
+            let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+            if let Err(e) = self.net.send_event(
+                introducer,
+                GetMaxLevelOp(MaxLevelReq {
+                    nonce,
+                    origin: self.core.id(),
+                }),
+            ) {
+                return Err(anyhow!("failed to send get max level request: {}", e));
+            }
+            tracing::info!("sent get max level request, pending response");
+
+            match tokio::time::timeout(timeout, rx).await {
+                Ok(Ok(res)) => {
+                    tracing::info!("received max level response: {:?}", res.max_level);
+                    Ok(res.max_level)
+                }
+                Ok(Err(_)) => Err(anyhow!(
+                    "failed to receive network response for get max level: sender dropped"
+                )),
+                Err(_) => Err(anyhow!("timed out waiting for get max level response")),
+            }
         }
+        .instrument(span)
+        .await
     }
 }
 
