@@ -7,11 +7,11 @@ use tokio::sync::oneshot;
 
 /// Tracks a single outstanding request awaiting a network-delivered reply, keyed by
 /// [`Nonce`] in `BaseNode::request_id_map`. One map, one variant per message type, not
-/// a map per type. Because the lock protects one logical entity, "requests this node
-/// has outstanding". Variants differ in channel primitive
-/// because their callers differ in concurrency shape: `search_by_id` stays synchronous
-/// (blocking `recv`, unchanged), while `get_max_level` is `async` (a
-/// `tokio::sync::oneshot::Receiver` awaited under a timeout).
+/// a map per type, because the lock should protect one logical entity, "requests this
+/// node has outstanding". Variants differ in channel primitive because their callers
+/// differ in concurrency shape: `search_by_id` stays synchronous (blocking `recv`,
+/// unchanged), while `get_max_level` is `async` (a `tokio::sync::oneshot::Receiver`
+/// awaited under a timeout).
 // TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
 #[allow(dead_code)]
 pub(super) enum Waiter {
