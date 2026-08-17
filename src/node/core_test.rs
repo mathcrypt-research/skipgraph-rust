@@ -3,8 +3,8 @@ use crate::core::model::identity::Identity;
 use crate::core::model::search::Nonce;
 use crate::core::testutil::fixtures::{
     join_all_with_timeout, random_address, random_identifier, random_identifier_greater_than,
-    random_identifier_less_than, random_lookup_table_with_extremes, random_membership_vector,
-    span_fixture,
+    random_identifier_less_than, random_identity, random_lookup_table_with_extremes,
+    random_membership_vector, span_fixture,
 };
 use crate::core::{
     ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableLevel,
@@ -434,26 +434,10 @@ fn test_max_level_empty_table() {
 #[test]
 fn test_max_level_one_side_populated() {
     let lt = ArrayLookupTable::new();
-    lt.update_entry(
-        Identity::new(
-            random_identifier(),
-            random_membership_vector(),
-            random_address(),
-        ),
-        2,
-        Direction::Left,
-    )
-    .expect("failed to update entry in lookup table");
-    lt.update_entry(
-        Identity::new(
-            random_identifier(),
-            random_membership_vector(),
-            random_address(),
-        ),
-        5,
-        Direction::Left,
-    )
-    .expect("failed to update entry in lookup table");
+    lt.update_entry(random_identity(), 2, Direction::Left)
+        .expect("failed to update entry in lookup table");
+    lt.update_entry(random_identity(), 5, Direction::Left)
+        .expect("failed to update entry in lookup table");
 
     let core = make_core(random_identifier(), Box::new(lt));
 
@@ -465,26 +449,10 @@ fn test_max_level_one_side_populated() {
 #[test]
 fn test_max_level_both_sides_populated_different_levels() {
     let lt = ArrayLookupTable::new();
-    lt.update_entry(
-        Identity::new(
-            random_identifier(),
-            random_membership_vector(),
-            random_address(),
-        ),
-        3,
-        Direction::Left,
-    )
-    .expect("failed to update entry in lookup table");
-    lt.update_entry(
-        Identity::new(
-            random_identifier(),
-            random_membership_vector(),
-            random_address(),
-        ),
-        7,
-        Direction::Right,
-    )
-    .expect("failed to update entry in lookup table");
+    lt.update_entry(random_identity(), 3, Direction::Left)
+        .expect("failed to update entry in lookup table");
+    lt.update_entry(random_identity(), 7, Direction::Right)
+        .expect("failed to update entry in lookup table");
 
     let core = make_core(random_identifier(), Box::new(lt));
 

@@ -57,10 +57,6 @@ pub trait Core: Send + Sync {
     ///
     /// * `candidate` - the membership vector to compare against this node's own.
     /// * `level` - the minimum required common-prefix length, in bits.
-    ///
-    /// # Returns
-    ///
-    /// `self.mem_vec().common_prefix_bit(candidate) >= level`.
     #[allow(dead_code)] // TODO: remove once prefix_match is wired into BuddyOp handling.
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool;
 
