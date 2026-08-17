@@ -1,6 +1,8 @@
 use crate::core::model::direction::Direction;
-use crate::core::{IdSearchReq, IdSearchRes, Identifier, LookupTable, MembershipVector};
-use anyhow::anyhow;
+use crate::core::{
+    IdSearchReq, IdSearchRes, Identifier, LookupTable, LookupTableLevel, MembershipVector,
+};
+use anyhow::{anyhow, Context};
 use tracing::Span;
 
 /// Core is the pure-local interface for a skip-graph node's algorithms.
@@ -30,6 +32,37 @@ pub trait Core: Send + Sync {
     /// Performs a local search for the given membership vector.
     #[allow(dead_code)]
     fn search_by_mem_vec(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
+
+    /// Returns the highest lookup-table level at which this node has any
+    /// populated neighbor entry, on either side. Used by join bootstrap: a
+    /// joining node asks an introducer for this value to seed its starting
+    /// search level.
+    ///
+    /// # Returns
+    ///
+    /// `0` when the lookup table has no populated entries on either side.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL** — propagated from a failed read of the local
+    /// lookup table: a broken local invariant, not evidence of anything a
+    /// peer sent.
+    #[allow(dead_code)] // TODO: remove once max_level is wired into join bootstrap.
+    fn max_level(&self) -> anyhow::Result<LookupTableLevel>;
+
+    /// Reports whether this node's membership vector shares a common prefix
+    /// of at least `level` bits with `candidate`'s.
+    ///
+    /// # Args
+    ///
+    /// * `candidate` - the membership vector to compare against this node's own.
+    /// * `level` - the minimum required common-prefix length, in bits.
+    ///
+    /// # Returns
+    ///
+    /// `self.mem_vec().common_prefix_bit(candidate) >= level`.
+    #[allow(dead_code)] // TODO: remove once prefix_match is wired into BuddyOp handling.
+    fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool;
 
     /// Shallow-clones this core. Cloned instances share the same underlying
     /// state (lookup table, etc.) via Arc.
@@ -174,6 +207,28 @@ impl Core for BaseCore {
 
     fn search_by_mem_vec(&self, _req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
         todo!()
+    }
+
+    fn max_level(&self) -> anyhow::Result<LookupTableLevel> {
+        let left = self
+            .lt
+            .left_neighbors()
+            .context("failed to read left neighbors from lookup table")?;
+        let right = self
+            .lt
+            .right_neighbors()
+            .context("failed to read right neighbors from lookup table")?;
+
+        Ok(left
+            .iter()
+            .chain(right.iter())
+            .map(|(level, _)| *level)
+            .max()
+            .unwrap_or(0))
+    }
+
+    fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool {
+        self.mem_vec.common_prefix_bit(candidate) >= level
     }
 
     fn clone_box(&self) -> Box<dyn Core> {

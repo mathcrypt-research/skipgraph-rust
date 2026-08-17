@@ -8,7 +8,7 @@ use crate::core::testutil::fixtures::{
 };
 use crate::core::{
     ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableLevel,
-    RelinkOutcome, LOOKUP_TABLE_LEVELS,
+    MembershipVector, RelinkOutcome, LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
@@ -419,4 +419,177 @@ fn test_search_by_id_error_propagation() {
         error_msg.contains("simulated lookup table error"),
         "error message '{error_msg}' doesn't contain expected text"
     );
+}
+
+/// Verifies `max_level` returns 0 when the lookup table has no populated entries.
+#[test]
+fn test_max_level_empty_table() {
+    let core = make_core(random_identifier(), Box::new(ArrayLookupTable::new()));
+
+    assert_eq!(core.max_level().unwrap(), 0);
+}
+
+/// Verifies `max_level` returns the highest populated level when only one side
+/// of the table has entries.
+#[test]
+fn test_max_level_one_side_populated() {
+    let lt = ArrayLookupTable::new();
+    lt.update_entry(
+        Identity::new(
+            random_identifier(),
+            random_membership_vector(),
+            random_address(),
+        ),
+        2,
+        Direction::Left,
+    )
+    .expect("failed to update entry in lookup table");
+    lt.update_entry(
+        Identity::new(
+            random_identifier(),
+            random_membership_vector(),
+            random_address(),
+        ),
+        5,
+        Direction::Left,
+    )
+    .expect("failed to update entry in lookup table");
+
+    let core = make_core(random_identifier(), Box::new(lt));
+
+    assert_eq!(core.max_level().unwrap(), 5);
+}
+
+/// Verifies `max_level` returns the highest populated level across both sides
+/// when left and right are populated at different levels.
+#[test]
+fn test_max_level_both_sides_populated_different_levels() {
+    let lt = ArrayLookupTable::new();
+    lt.update_entry(
+        Identity::new(
+            random_identifier(),
+            random_membership_vector(),
+            random_address(),
+        ),
+        3,
+        Direction::Left,
+    )
+    .expect("failed to update entry in lookup table");
+    lt.update_entry(
+        Identity::new(
+            random_identifier(),
+            random_membership_vector(),
+            random_address(),
+        ),
+        7,
+        Direction::Right,
+    )
+    .expect("failed to update entry in lookup table");
+
+    let core = make_core(random_identifier(), Box::new(lt));
+
+    assert_eq!(core.max_level().unwrap(), 7);
+}
+
+/// Verifies `max_level` propagates errors raised by the underlying lookup table.
+#[test]
+fn test_max_level_error_propagation() {
+    struct MockErrorLookupTable;
+
+    impl Clone for MockErrorLookupTable {
+        fn clone(&self) -> Self {
+            MockErrorLookupTable
+        }
+    }
+
+    impl LookupTable for MockErrorLookupTable {
+        fn update_entry(
+            &self,
+            _identity: Identity,
+            _level: usize,
+            _direction: Direction,
+        ) -> anyhow::Result<()> {
+            todo!()
+        }
+
+        fn remove_entry(&self, _: LookupTableLevel, _: Direction) -> anyhow::Result<()> {
+            todo!()
+        }
+
+        fn get_entry(&self, _: usize, _: Direction) -> anyhow::Result<Option<Identity>> {
+            todo!()
+        }
+
+        fn try_link(
+            &self,
+            _: LookupTableLevel,
+            _: Direction,
+            _: Identity,
+        ) -> anyhow::Result<LinkOutcome> {
+            todo!()
+        }
+
+        fn try_relink(
+            &self,
+            _: LookupTableLevel,
+            _: Direction,
+            _: Identity,
+        ) -> anyhow::Result<RelinkOutcome> {
+            todo!()
+        }
+
+        fn equal(&self, _: &dyn LookupTable) -> bool {
+            todo!()
+        }
+
+        fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+            Err(anyhow!("simulated lookup table error"))
+        }
+
+        fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+            Ok(Vec::new())
+        }
+
+        fn clone_box(&self) -> Box<dyn LookupTable> {
+            Box::new(self.clone())
+        }
+    }
+
+    let core = make_core(random_identifier(), Box::new(MockErrorLookupTable));
+    let result = core.max_level();
+
+    assert!(
+        result.is_err(),
+        "expected an error but got a success result"
+    );
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("failed to read left neighbors from lookup table"),
+        "error message '{error_msg}' doesn't contain expected text"
+    );
+}
+
+/// Verifies `prefix_match` matches `common_prefix_bit(candidate) >= level`
+/// exactly, including at the boundary where they're equal.
+#[test]
+fn test_prefix_match() {
+    // all-zero and all-one membership vectors share zero common prefix bits.
+    let mv_zero = MembershipVector::from_bytes(&[0u8; 32]).unwrap();
+    let mv_ones = MembershipVector::from_bytes(&[0xffu8; 32]).unwrap();
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        mv_zero,
+        Box::new(ArrayLookupTable::new()),
+    );
+
+    let common = mv_zero.common_prefix_bit(mv_ones);
+    assert_eq!(common, 0);
+
+    // true case: required level is below the actual common-prefix length.
+    assert!(core.prefix_match(mv_zero, 0));
+    // boundary case: required level equals the actual common-prefix length exactly.
+    assert!(core.prefix_match(mv_ones, common));
+    // false case: required level exceeds the actual common-prefix length.
+    assert!(!core.prefix_match(mv_ones, common + 1));
 }
