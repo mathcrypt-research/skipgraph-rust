@@ -17,10 +17,10 @@ target/
 #.idea/
 .DS_Store
 
-# Untracked internal references (papers, private docs, etc.).
+# Gitignored project brain (private reference material + working notes).
 # Contents must never be referenced directly in code or comments.
 # Extract and restate any needed information explicitly in the codebase.
-internal/
+.brain/
 
 Cargo.lock
 
