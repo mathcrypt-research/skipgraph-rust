@@ -7,13 +7,14 @@ use crate::core::testutil::fixtures::{
     random_membership_vector, span_fixture,
 };
 use crate::core::{
-    ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableLevel,
-    MembershipVector, RelinkOutcome, LOOKUP_TABLE_LEVELS,
+    ArrayLookupTable, IdSearchReq, Identifier, LookupTable, LookupTableMock, MembershipVector,
+    LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
 use rand::Rng;
 use std::sync::Arc;
+use unimock::*;
 
 fn make_core(id: Identifier, lt: Box<dyn LookupTable>) -> BaseCore {
     BaseCore::new(span_fixture(), id, random_membership_vector(), lt)
@@ -334,68 +335,13 @@ fn test_search_by_id_concurrent_right_direction() {
 /// table.
 #[test]
 fn test_search_by_id_error_propagation() {
-    struct MockErrorLookupTable;
+    let lt = Unimock::new(
+        LookupTableMock::get_entry
+            .each_call(matching!(_, _))
+            .answers(&|_, _, _| Err(anyhow!("simulated lookup table error"))),
+    );
 
-    impl Clone for MockErrorLookupTable {
-        fn clone(&self) -> Self {
-            MockErrorLookupTable
-        }
-    }
-
-    impl LookupTable for MockErrorLookupTable {
-        fn update_entry(
-            &self,
-            _identity: Identity,
-            _level: usize,
-            _direction: Direction,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn remove_entry(&self, _: LookupTableLevel, _: Direction) -> anyhow::Result<()> {
-            todo!()
-        }
-
-        fn get_entry(&self, _: usize, _: Direction) -> anyhow::Result<Option<Identity>> {
-            Err(anyhow!("simulated lookup table error"))
-        }
-
-        fn try_link(
-            &self,
-            _: LookupTableLevel,
-            _: Direction,
-            _: Identity,
-        ) -> anyhow::Result<LinkOutcome> {
-            todo!()
-        }
-
-        fn try_relink(
-            &self,
-            _: LookupTableLevel,
-            _: Direction,
-            _: Identity,
-        ) -> anyhow::Result<RelinkOutcome> {
-            todo!()
-        }
-
-        fn equal(&self, _: &dyn LookupTable) -> bool {
-            todo!()
-        }
-
-        fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-            Ok(Vec::new())
-        }
-
-        fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-            Ok(Vec::new())
-        }
-
-        fn clone_box(&self) -> Box<dyn LookupTable> {
-            Box::new(self.clone())
-        }
-    }
-
-    let core = make_core(random_identifier(), Box::new(MockErrorLookupTable));
+    let core = make_core(random_identifier(), Box::new(lt));
     let req = IdSearchReq {
         nonce: Nonce::random(),
         origin: core.id(),
@@ -462,68 +408,13 @@ fn test_max_level_both_sides_populated_different_levels() {
 /// Verifies `max_level` propagates errors raised by the underlying lookup table.
 #[test]
 fn test_max_level_error_propagation() {
-    struct MockErrorLookupTable;
+    let lt = Unimock::new(
+        LookupTableMock::left_neighbors
+            .each_call(matching!())
+            .answers(&|_| Err(anyhow!("simulated lookup table error"))),
+    );
 
-    impl Clone for MockErrorLookupTable {
-        fn clone(&self) -> Self {
-            MockErrorLookupTable
-        }
-    }
-
-    impl LookupTable for MockErrorLookupTable {
-        fn update_entry(
-            &self,
-            _identity: Identity,
-            _level: usize,
-            _direction: Direction,
-        ) -> anyhow::Result<()> {
-            todo!()
-        }
-
-        fn remove_entry(&self, _: LookupTableLevel, _: Direction) -> anyhow::Result<()> {
-            todo!()
-        }
-
-        fn get_entry(&self, _: usize, _: Direction) -> anyhow::Result<Option<Identity>> {
-            todo!()
-        }
-
-        fn try_link(
-            &self,
-            _: LookupTableLevel,
-            _: Direction,
-            _: Identity,
-        ) -> anyhow::Result<LinkOutcome> {
-            todo!()
-        }
-
-        fn try_relink(
-            &self,
-            _: LookupTableLevel,
-            _: Direction,
-            _: Identity,
-        ) -> anyhow::Result<RelinkOutcome> {
-            todo!()
-        }
-
-        fn equal(&self, _: &dyn LookupTable) -> bool {
-            todo!()
-        }
-
-        fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-            Err(anyhow!("simulated lookup table error"))
-        }
-
-        fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
-            Ok(Vec::new())
-        }
-
-        fn clone_box(&self) -> Box<dyn LookupTable> {
-            Box::new(self.clone())
-        }
-    }
-
-    let core = make_core(random_identifier(), Box::new(MockErrorLookupTable));
+    let core = make_core(random_identifier(), Box::new(lt));
     let result = core.max_level();
 
     assert!(

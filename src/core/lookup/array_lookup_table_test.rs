@@ -324,21 +324,6 @@ mod tests {
             .is_err());
     }
 
-    #[test]
-    /// Test equality of lookup tables.
-    /// The test will create two identical lookup tables and check if they are equal.
-    /// The test will also create a different lookup table and check if they are not equal.
-    /// The test will also check if the lookup table is equal to itself.
-    /// The test will also check if the lookup table is not equal to None.
-    fn test_lookup_table_equality() {
-        let lt1 = random_lookup_table(10);
-        let lt2 = random_lookup_table(10);
-
-        assert_ne!(lt1, lt2); // check if two random lookup tables are not equal
-        assert_eq!(lt1, lt1); // check if the lookup table is equal to itself
-        assert_eq!(lt2, lt2); // check if the lookup table is equal to itself
-    }
-
     /// Test concurrent reads from the lookup table.
     /// Creates a lookup table with 20 entries (10 left and 10 right).
     /// Spawns 20 threads to read the entries concurrently.
@@ -619,8 +604,9 @@ mod tests {
         // Verify the original lookup table sees the change made through the clone
         assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
-        // Both instances should be equal since they share the same underlying data
-        assert_eq!(lt1, lt2);
+        // Both instances see both writes, since they share the same underlying data
+        assert_eq!(lt1.get_entry(0, Direction::Left).unwrap(), Some(id1));
+        assert_eq!(lt2.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
         // Verify multiple clones all share the same data
         let lt3 = lt2.clone();
@@ -656,8 +642,9 @@ mod tests {
         // Verify the original lookup table sees the change made through the clone
         assert_eq!(lt1.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
-        // Both trait objects should be equal since they share the same underlying data
-        assert!(lt1.equal(&*lt2));
+        // Both trait objects see both writes, since they share the same underlying data
+        assert_eq!(lt1.get_entry(0, Direction::Left).unwrap(), Some(id1));
+        assert_eq!(lt2.get_entry(1, Direction::Right).unwrap(), Some(id2));
 
         // Test multiple levels of cloning
         let lt3 = lt2.clone();
