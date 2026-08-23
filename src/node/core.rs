@@ -41,6 +41,9 @@ pub trait Core: Send + Sync {
     /// # Returns
     ///
     /// `0` when the lookup table has no populated entries on either side.
+    /// This is indistinguishable from a table whose only populated entry sits
+    /// at level 0 itself; callers that only need a starting search level (the
+    /// join-bootstrap use case) are unaffected either way.
     ///
     /// # Errors
     ///
