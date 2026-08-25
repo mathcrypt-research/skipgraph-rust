@@ -8,7 +8,7 @@ use tokio::time::Interval;
 
 /// RepairSchedule abstracts "wait for the next backpointer-repair tick" so the repair task
 /// never calls `tokio::time::sleep`/`interval` directly. [`TokioRepairSchedule`] is the
-/// production implementation; [`ManualRepairSchedule`] is a test double a test drives
+/// production implementation; [`ManualRepairSchedule`] is a test double that a test drives
 /// explicitly, one tick at a time, with zero wall-clock waiting.
 // TODO: remove once RepairSchedule is wired into the repair task.
 #[allow(dead_code)]

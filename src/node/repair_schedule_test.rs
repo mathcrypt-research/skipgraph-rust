@@ -57,7 +57,17 @@ async fn test_manual_repair_schedule_single_fire_grants_exactly_one_tick() {
 async fn test_tokio_repair_schedule_ticks_after_period_elapses() {
     let schedule = TokioRepairSchedule::new(Duration::from_millis(100));
 
+    // `tokio::time::interval`'s own first tick resolves immediately; consume it so the
+    // assertions below observe a tick that actually waited out the period.
+    schedule.tick().await;
+
+    let premature = tokio::time::timeout(Duration::from_millis(50), schedule.tick()).await;
+    assert!(
+        premature.is_err(),
+        "tick completed before its period elapsed"
+    );
+
     tokio::time::timeout(Duration::from_secs(2), schedule.tick())
         .await
-        .expect("tick did not complete before the timeout");
+        .expect("tick did not complete after its period elapsed");
 }
