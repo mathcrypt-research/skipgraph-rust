@@ -61,6 +61,8 @@ async fn test_tokio_repair_schedule_ticks_after_period_elapses() {
     // assertions below observe a tick that actually waited out the period.
     schedule.tick().await;
 
+    // the period is 100ms, so a tick can't legitimately arrive within this 50ms window;
+    // timing out here proves the schedule didn't fire early.
     let premature = tokio::time::timeout(Duration::from_millis(50), schedule.tick()).await;
     assert!(
         premature.is_err(),
