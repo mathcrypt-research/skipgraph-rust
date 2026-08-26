@@ -59,7 +59,9 @@ async fn test_tokio_repair_schedule_ticks_after_period_elapses() {
 
     // `tokio::time::interval`'s own first tick resolves immediately; consume it so the
     // assertions below observe a tick that actually waited out the period.
-    schedule.tick().await;
+    tokio::time::timeout(Duration::from_secs(2), schedule.tick())
+        .await
+        .expect("first tick did not resolve immediately");
 
     // the period is 100ms, so a tick can't legitimately arrive within this 50ms window;
     // timing out here proves the schedule didn't fire early.
