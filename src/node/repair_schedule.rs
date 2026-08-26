@@ -66,6 +66,9 @@ impl ManualRepairSchedule {
     }
 
     /// Fires exactly one repair tick, completing one pending or future `tick()` call.
+    ///
+    /// Permits don't accumulate: firing twice with no intervening `tick()` call still
+    /// unblocks only one future `tick()` call.
     pub(crate) fn fire(&self) {
         self.notify.notify_one();
     }
