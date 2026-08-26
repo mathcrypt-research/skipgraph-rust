@@ -43,6 +43,7 @@ pub enum RelinkOutcome {
 }
 
 /// LookupTable is the core view of Skip Graph node towards the network.
+#[unimock::unimock(api = LookupTableMock)]
 pub trait LookupTable: Send + Sync {
     /// Update the entry at the given level and direction.
     fn update_entry(
@@ -155,9 +156,6 @@ pub trait LookupTable: Send + Sync {
         claimant: Identity,
     ) -> anyhow::Result<RelinkOutcome>;
 
-    /// Dynamically compares the lookup table with another for equality.
-    fn equal(&self, other: &dyn LookupTable) -> bool;
-
     /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
     fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
 
@@ -171,12 +169,6 @@ pub trait LookupTable: Send + Sync {
     /// visible in all cloned instances. This is the standard cloning behavior for all
     /// LookupTable implementations.
     fn clone_box(&self) -> Box<dyn LookupTable>;
-}
-
-impl PartialEq for dyn LookupTable {
-    fn eq(&self, other: &dyn LookupTable) -> bool {
-        self.equal(other)
-    }
 }
 
 impl Clone for Box<dyn LookupTable> {

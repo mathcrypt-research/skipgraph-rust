@@ -10,6 +10,7 @@ pub use crate::core::lookup::array_lookup_table::LOOKUP_TABLE_LEVELS;
 pub use crate::core::lookup::LinkOutcome;
 pub use crate::core::lookup::LookupTable;
 pub use crate::core::lookup::LookupTableLevel;
+pub use crate::core::lookup::LookupTableMock;
 pub use crate::core::lookup::RelinkOutcome;
 pub use crate::core::model::address::Address;
 pub use crate::core::model::direction::Direction;
