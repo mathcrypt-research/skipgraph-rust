@@ -288,35 +288,6 @@ impl LookupTable for ArrayLookupTable {
         Ok(outcome)
     }
 
-    /// Dynamically compares the lookup table with another for equality.
-    /// This is a deep comparison of the entries in the table.
-    /// Returns true if the entries are equal, false otherwise.
-    fn equal(&self, other: &dyn LookupTable) -> bool {
-        // iterates over the levels and compares the entries in the left and right directions
-        let inner = self.inner.read();
-        for l in 0..LOOKUP_TABLE_LEVELS {
-            // Check if the left entry is equal
-            if let Ok(other_entry) = other.get_entry(l, Direction::Left) {
-                if inner.left[l].as_ref() != other_entry.as_ref() {
-                    return false;
-                }
-            } else {
-                // if retrieving the entry fails on the other table, return false
-                return false;
-            }
-
-            if let Ok(other_entry) = other.get_entry(l, Direction::Right) {
-                if inner.right[l].as_ref() != other_entry.as_ref() {
-                    return false;
-                }
-            } else {
-                // if retrieving the entry fails on the other table, return false
-                return false;
-            }
-        }
-        true
-    }
-
     /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
     fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
         let inner = self.inner.read();
@@ -345,11 +316,5 @@ impl LookupTable for ArrayLookupTable {
 
     fn clone_box(&self) -> Box<dyn LookupTable> {
         Box::new(self.clone())
-    }
-}
-
-impl PartialEq for ArrayLookupTable {
-    fn eq(&self, other: &Self) -> bool {
-        self.equal(other)
     }
 }
