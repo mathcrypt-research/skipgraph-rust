@@ -10,16 +10,12 @@ use tokio::time::Interval;
 /// never calls `tokio::time::sleep`/`interval` directly. [`TokioRepairSchedule`] is the
 /// production implementation; [`ManualRepairSchedule`] is a test double that a test drives
 /// explicitly, one tick at a time, with zero wall-clock waiting.
-// TODO: remove once RepairSchedule is wired into the repair task.
-#[allow(dead_code)]
 pub(crate) trait RepairSchedule: Send + Sync {
     /// Waits for the next repair tick.
     fn tick(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// Production `RepairSchedule`, backed by a real `tokio::time::Interval`.
-// TODO: remove once RepairSchedule is wired into the repair task.
-#[allow(dead_code)]
 pub(crate) struct TokioRepairSchedule {
     interval: Mutex<Interval>,
 }
@@ -33,7 +29,6 @@ impl TokioRepairSchedule {
     ///
     /// Must be called from within a running Tokio runtime, per
     /// `tokio::time::interval`'s own precondition.
-    #[allow(dead_code)] // TODO: remove once RepairSchedule is wired into the repair task.
     pub(crate) fn new(period: Duration) -> Self {
         TokioRepairSchedule {
             interval: Mutex::new(tokio::time::interval(period)),

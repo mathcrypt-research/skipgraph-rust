@@ -30,7 +30,6 @@ pub trait Core: Send + Sync {
     fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Performs a local search for the given membership vector.
-    #[allow(dead_code)]
     fn search_by_mem_vec(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Returns the highest lookup-table level at which this node has any
@@ -50,7 +49,6 @@ pub trait Core: Send + Sync {
     /// **CRITICAL, INTERNAL** — propagated from a failed read of the local
     /// lookup table: a broken local invariant, not evidence of anything a
     /// peer sent.
-    #[allow(dead_code)] // TODO: remove once max_level is wired into join bootstrap.
     fn max_level(&self) -> anyhow::Result<LookupTableLevel>;
 
     /// Reports whether this node's membership vector shares a common prefix
@@ -60,7 +58,6 @@ pub trait Core: Send + Sync {
     ///
     /// * `candidate` - the membership vector to compare against this node's own.
     /// * `level` - the minimum required common-prefix length, in bits.
-    #[allow(dead_code)] // TODO: remove once prefix_match is wired into BuddyOp handling.
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool;
 
     /// Shallow-clones this core. Cloned instances share the same underlying
@@ -78,8 +75,6 @@ impl Clone for Box<dyn Core> {
 /// `ArrayLookupTable`-style lookup table. It owns the node's identifier,
 /// membership vector, and lookup table. All state is shallow-cloneable via
 /// the Arc-backed lookup table; cloned instances share the same LT.
-// TODO: Remove #[allow(dead_code)] once BaseCore is used in production code.
-#[allow(dead_code)]
 pub struct BaseCore {
     id: Identifier,
     mem_vec: MembershipVector,
