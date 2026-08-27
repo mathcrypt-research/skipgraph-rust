@@ -162,6 +162,24 @@ pub trait LookupTable: Send + Sync {
     /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
     fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
 
+    /// Returns the highest level with a populated entry on either side.
+    ///
+    /// Unlike calling [`Self::left_neighbors`] and [`Self::right_neighbors`] separately and
+    /// combining the results, the left and right sides are read atomically with respect to
+    /// concurrent writes. No concurrent write can land between reading the two sides and leave
+    /// the combined result reflecting no single consistent state of the table.
+    ///
+    /// # Returns
+    ///
+    /// `None` if no level has a populated entry on either side (an empty table). `Some(level)`
+    /// for the highest level with a populated entry, otherwise.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL**: a failed read of the local table, not evidence of anything a
+    /// peer sent.
+    fn max_populated_level(&self) -> anyhow::Result<Option<LookupTableLevel>>;
+
     /// Creates a shallow copy of this lookup table.
     ///
     /// Implementations should ensure that cloned instances share the same underlying data

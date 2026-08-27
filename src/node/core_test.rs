@@ -409,7 +409,7 @@ fn test_max_level_both_sides_populated_different_levels() {
 #[test]
 fn test_max_level_error_propagation() {
     let lt = Unimock::new(
-        LookupTableMock::left_neighbors
+        LookupTableMock::max_populated_level
             .each_call(matching!())
             .answers(&|_| Err(anyhow!("simulated lookup table error"))),
     );
@@ -423,7 +423,7 @@ fn test_max_level_error_propagation() {
     );
     let error_msg = result.unwrap_err().to_string();
     assert!(
-        error_msg.contains("failed to read left neighbors from lookup table"),
+        error_msg.contains("failed to compute max lookup table level"),
         "error message '{error_msg}' doesn't contain expected text"
     );
 }

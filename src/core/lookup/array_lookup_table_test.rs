@@ -581,6 +581,46 @@ mod tests {
         }
     }
 
+    /// `max_populated_level` on an empty table returns `None`, distinguishing "nothing
+    /// populated" from a populated level 0.
+    #[test]
+    fn test_max_populated_level_empty_table() {
+        let lt = ArrayLookupTable::new();
+        assert_eq!(lt.max_populated_level().unwrap(), None);
+    }
+
+    /// `max_populated_level` returns the populated level when only one side of the table has
+    /// an entry.
+    #[test]
+    fn test_max_populated_level_one_side_populated() {
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), 4, Direction::Left)
+            .unwrap();
+        assert_eq!(lt.max_populated_level().unwrap(), Some(4));
+    }
+
+    /// `max_populated_level` returns the higher of the two levels when left and right are
+    /// populated at different levels.
+    #[test]
+    fn test_max_populated_level_both_sides_different_levels() {
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), 2, Direction::Left)
+            .unwrap();
+        lt.update_entry(random_identity(), 6, Direction::Right)
+            .unwrap();
+        assert_eq!(lt.max_populated_level().unwrap(), Some(6));
+    }
+
+    /// `max_populated_level` returns `Some(0)`, not `None`, when level 0 is the only populated
+    /// entry. An empty table and a table populated only at level 0 must not be conflated.
+    #[test]
+    fn test_max_populated_level_only_level_zero_populated() {
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), 0, Direction::Right)
+            .unwrap();
+        assert_eq!(lt.max_populated_level().unwrap(), Some(0));
+    }
+
     /// Tests that cloning ArrayLookupTable creates a shallow copy.
     /// Changes made to one instance should be visible in the cloned instance.
     #[test]

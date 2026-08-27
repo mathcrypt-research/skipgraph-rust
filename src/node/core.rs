@@ -204,20 +204,10 @@ impl Core for BaseCore {
     }
 
     fn max_level(&self) -> anyhow::Result<LookupTableLevel> {
-        let left = self
+        Ok(self
             .lt
-            .left_neighbors()
-            .context("failed to read left neighbors from lookup table")?;
-        let right = self
-            .lt
-            .right_neighbors()
-            .context("failed to read right neighbors from lookup table")?;
-
-        Ok(left
-            .iter()
-            .chain(right.iter())
-            .map(|(level, _)| *level)
-            .max()
+            .max_populated_level()
+            .context("failed to compute max lookup table level")?
             .unwrap_or(0))
     }
 
