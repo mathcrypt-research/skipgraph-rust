@@ -12,8 +12,6 @@ use tokio::sync::oneshot;
 /// differ in concurrency shape: `search_by_id` stays synchronous (blocking `recv`,
 /// unchanged), while `get_max_level` is `async` (a `tokio::sync::oneshot::Receiver`
 /// awaited under a timeout).
-// TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
-#[allow(dead_code)]
 pub(super) enum Waiter {
     /// a pending `search_by_id` call, resolved by a `SearchByIdResponse`.
     Search(SyncSender<IdSearchRes>),

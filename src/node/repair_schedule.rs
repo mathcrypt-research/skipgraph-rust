@@ -10,8 +10,6 @@ use tokio::time::Interval;
 /// never calls `tokio::time::sleep`/`interval` directly. [`TokioRepairSchedule`] is the
 /// production implementation; [`ManualRepairSchedule`] is a test double that a test drives
 /// explicitly, one tick at a time, with zero wall-clock waiting.
-// TODO: remove once RepairSchedule is wired into the repair task.
-#[allow(dead_code)]
 pub(crate) trait RepairSchedule: Send + Sync {
     /// Waits for the next repair tick.
     ///
@@ -21,8 +19,6 @@ pub(crate) trait RepairSchedule: Send + Sync {
 }
 
 /// Production `RepairSchedule`, backed by a real `tokio::time::Interval`.
-// TODO: remove once RepairSchedule is wired into the repair task.
-#[allow(dead_code)]
 pub(crate) struct TokioRepairSchedule {
     interval: Mutex<Interval>,
 }
@@ -40,7 +36,6 @@ impl TokioRepairSchedule {
     /// period)` instead if the first repair should wait a full period. Missed ticks are
     /// skipped rather than fired back-to-back: if a repair cycle overruns `period`, the
     /// schedule resumes its normal cadence instead of bursting through the backlog.
-    #[allow(dead_code)] // TODO: remove once RepairSchedule is wired into the repair task.
     pub(crate) fn new(period: Duration) -> Self {
         let mut interval = tokio::time::interval(period);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

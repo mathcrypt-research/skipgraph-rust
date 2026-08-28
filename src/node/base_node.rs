@@ -19,8 +19,6 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tracing::{Instrument, Span};
 
-// TODO: Remove #[allow(dead_code)] once BaseNode is used in production code.
-#[allow(dead_code)]
 /// `BaseNode` is the network-aware orchestrator for a single skip-graph node.
 ///
 /// It composes a `Box<dyn Core>` (the pure-local algorithms + lookup table)
@@ -75,18 +73,15 @@ impl BaseNode {
     }
 
     /// Returns the node's identifier (delegated to core).
-    #[allow(dead_code)]
     pub(crate) fn id(&self) -> Identifier {
         self.core.id()
     }
 
     /// Returns the node's membership vector (delegated to core).
-    #[allow(dead_code)]
     pub(crate) fn mem_vec(&self) -> MembershipVector {
         self.core.mem_vec()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
         let span = tracing::trace_span!("search_by_id", target = ?req.target, level = ?req.level);
         let _enter = span.enter();
@@ -169,7 +164,6 @@ impl BaseNode {
     ///   seeded level.
     /// * **RECOVERABLE** — the reply channel is dropped before a reply arrives.
     /// * **RECOVERABLE** — `timeout` elapses before a reply arrives.
-    #[allow(dead_code)] // TODO: remove once phase-0 bootstrap is wired into join orchestration.
     pub(crate) async fn get_max_level(
         &self,
         introducer: Identifier,

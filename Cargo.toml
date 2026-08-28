@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.89.0"
 
+[lints.rust]
+# Several node types (BaseNode, BaseCore, RepairSchedule, Waiter) are staged ahead of the
+# production wiring that will call them; allow at the package level instead of scattering
+# per-item #[allow(dead_code)] across every not-yet-wired item. Remove once wired in.
+dead_code = "allow"
+
 [dependencies]
 hex = "0.4.3"
 anyhow = "1.0.86"
