@@ -12,6 +12,9 @@ use tokio::time::Interval;
 /// explicitly, one tick at a time, with zero wall-clock waiting.
 pub(crate) trait RepairSchedule: Send + Sync {
     /// Waits for the next repair tick.
+    ///
+    /// Whether the first call resolves immediately or waits a full period is
+    /// implementation-defined; see the implementing type's own docs.
     fn tick(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
@@ -28,10 +31,16 @@ impl TokioRepairSchedule {
     /// * `period` - the duration between repair ticks.
     ///
     /// Must be called from within a running Tokio runtime, per
-    /// `tokio::time::interval`'s own precondition.
+    /// `tokio::time::interval`'s own precondition. Its first tick fires immediately
+    /// rather than after `period`; use `tokio::time::interval_at(Instant::now() + period,
+    /// period)` instead if the first repair should wait a full period. Missed ticks are
+    /// skipped rather than fired back-to-back: if a repair cycle overruns `period`, the
+    /// schedule resumes its normal cadence instead of bursting through the backlog.
     pub(crate) fn new(period: Duration) -> Self {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         TokioRepairSchedule {
-            interval: Mutex::new(tokio::time::interval(period)),
+            interval: Mutex::new(interval),
         }
     }
 }
