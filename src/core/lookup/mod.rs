@@ -157,10 +157,10 @@ pub trait LookupTable: Send + Sync {
     ) -> anyhow::Result<RelinkOutcome>;
 
     /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
-    fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
+    fn left_neighbors(&self) -> Vec<(usize, Identity)>;
 
     /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
-    fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>>;
+    fn right_neighbors(&self) -> Vec<(usize, Identity)>;
 
     /// Returns the highest level with a populated entry on either side.
     ///

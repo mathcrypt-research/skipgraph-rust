@@ -562,7 +562,7 @@ mod tests {
     fn test_left_and_right_neighbors() {
         let lt = random_lookup_table(LOOKUP_TABLE_LEVELS);
 
-        let rights = lt.right_neighbors().unwrap();
+        let rights = lt.right_neighbors();
         assert_eq!(rights.len(), LOOKUP_TABLE_LEVELS);
         for (level, identity) in rights.iter() {
             assert_eq!(
@@ -571,7 +571,7 @@ mod tests {
             );
         }
 
-        let lefts = lt.left_neighbors().unwrap();
+        let lefts = lt.left_neighbors();
         assert_eq!(lefts.len(), LOOKUP_TABLE_LEVELS);
         for (level, identity) in lefts.iter() {
             assert_eq!(

@@ -75,7 +75,6 @@ fn test_search_by_id_found_left_direction() {
 
         let (expected_lvl, expected_identity) = lt
             .left_neighbors()
-            .unwrap()
             .into_iter()
             .filter(|(l, id)| *l <= req.level && id.id() >= req.target)
             .min_by_key(|(_, id)| id.id())
@@ -113,7 +112,6 @@ fn test_search_by_id_found_right_direction() {
 
         let (expected_lvl, expected_identity) = lt
             .right_neighbors()
-            .unwrap()
             .into_iter()
             .filter(|(lvl, id)| *lvl <= req.level && id.id() <= req.target)
             .max_by_key(|(_, id)| id.id())
@@ -253,7 +251,6 @@ fn test_search_by_id_concurrent_found_left_direction() {
 
             let expected = lt_clone
                 .left_neighbors()
-                .unwrap()
                 .into_iter()
                 .filter(|(l, id)| *l <= req.level && id.id() >= req.target)
                 .min_by_key(|(_, id)| id.id());
@@ -308,7 +305,6 @@ fn test_search_by_id_concurrent_right_direction() {
 
             let expected = lt_clone
                 .right_neighbors()
-                .unwrap()
                 .into_iter()
                 .filter(|(l, id)| *l <= req.level && id.id() <= req.target)
                 .max_by_key(|(_, id)| id.id());
