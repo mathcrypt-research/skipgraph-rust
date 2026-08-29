@@ -173,12 +173,7 @@ pub trait LookupTable: Send + Sync {
     ///
     /// `None` if no level has a populated entry on either side (an empty table). `Some(level)`
     /// for the highest level with a populated entry, otherwise.
-    ///
-    /// # Errors
-    ///
-    /// **CRITICAL, INTERNAL**: a failed read of the local table, not evidence of anything a
-    /// peer sent.
-    fn max_populated_level(&self) -> anyhow::Result<Option<LookupTableLevel>>;
+    fn max_populated_level(&self) -> Option<LookupTableLevel>;
 
     /// Creates a shallow copy of this lookup table.
     ///

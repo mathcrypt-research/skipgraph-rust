@@ -405,29 +405,6 @@ fn test_max_level_both_sides_populated_different_levels() {
     assert_eq!(core.max_level().unwrap(), 7);
 }
 
-/// Verifies `max_level` propagates errors raised by the underlying lookup table.
-#[test]
-fn test_max_level_error_propagation() {
-    let lt = Unimock::new(
-        LookupTableMock::max_populated_level
-            .each_call(matching!())
-            .answers(&|_| Err(anyhow!("simulated lookup table error"))),
-    );
-
-    let core = make_core(random_identifier(), Box::new(lt));
-    let result = core.max_level();
-
-    assert!(
-        result.is_err(),
-        "expected an error but got a success result"
-    );
-    let error_msg = result.unwrap_err().to_string();
-    assert!(
-        error_msg.contains("failed to compute max lookup table level"),
-        "error message '{error_msg}' doesn't contain expected text"
-    );
-}
-
 /// Verifies `prefix_match` matches `common_prefix_bit(candidate) >= level`
 /// exactly, including at the boundary where they're equal.
 #[test]

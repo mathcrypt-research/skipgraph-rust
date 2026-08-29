@@ -316,15 +316,12 @@ impl LookupTable for ArrayLookupTable {
 
     /// Implements [`LookupTable::max_populated_level`] under a single `inner.read()` guard, so
     /// the left and right sides are inspected against the same snapshot of the table.
-    fn max_populated_level(&self) -> anyhow::Result<Option<LookupTableLevel>> {
+    fn max_populated_level(&self) -> Option<LookupTableLevel> {
         let inner = self.inner.read();
 
-        for level in (0..LOOKUP_TABLE_LEVELS).rev() {
-            if inner.left[level].is_some() || inner.right[level].is_some() {
-                return Ok(Some(level));
-            }
-        }
-        Ok(None)
+        (0..LOOKUP_TABLE_LEVELS)
+            .rev()
+            .find(|&level| inner.left[level].is_some() || inner.right[level].is_some())
     }
 
     fn clone_box(&self) -> Box<dyn LookupTable> {

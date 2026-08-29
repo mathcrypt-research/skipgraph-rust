@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn test_max_populated_level_empty_table() {
         let lt = ArrayLookupTable::new();
-        assert_eq!(lt.max_populated_level().unwrap(), None);
+        assert_eq!(lt.max_populated_level(), None);
     }
 
     /// `max_populated_level` returns the populated level when only one side of the table has
@@ -596,7 +596,7 @@ mod tests {
         let lt = ArrayLookupTable::new();
         lt.update_entry(random_identity(), 4, Direction::Left)
             .unwrap();
-        assert_eq!(lt.max_populated_level().unwrap(), Some(4));
+        assert_eq!(lt.max_populated_level(), Some(4));
     }
 
     /// `max_populated_level` returns the higher of the two levels when left and right are
@@ -608,7 +608,7 @@ mod tests {
             .unwrap();
         lt.update_entry(random_identity(), 6, Direction::Right)
             .unwrap();
-        assert_eq!(lt.max_populated_level().unwrap(), Some(6));
+        assert_eq!(lt.max_populated_level(), Some(6));
     }
 
     /// `max_populated_level` returns `Some(0)`, not `None`, when level 0 is the only populated
@@ -618,7 +618,7 @@ mod tests {
         let lt = ArrayLookupTable::new();
         lt.update_entry(random_identity(), 0, Direction::Right)
             .unwrap();
-        assert_eq!(lt.max_populated_level().unwrap(), Some(0));
+        assert_eq!(lt.max_populated_level(), Some(0));
     }
 
     /// Tests that cloning ArrayLookupTable creates a shallow copy.
