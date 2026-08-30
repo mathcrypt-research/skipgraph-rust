@@ -156,10 +156,16 @@ pub trait LookupTable: Send + Sync {
         claimant: Identity,
     ) -> anyhow::Result<RelinkOutcome>;
 
-    /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
+    /// Returns the list of left neighbors at the current node as a vector of tuples containing
+    /// the level and identity.
+    ///
+    /// Exercised only by tests today; retained because a future repair pass needs to enumerate
+    /// every populated entry here, not just the highest, to probe each neighbor individually.
     fn left_neighbors(&self) -> Vec<(usize, Identity)>;
 
-    /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
+    /// Returns the list of right neighbors at the current node as a vector of tuples containing
+    /// the level and identity. See [`Self::left_neighbors`] for why this is retained despite
+    /// having no production caller today.
     fn right_neighbors(&self) -> Vec<(usize, Identity)>;
 
     /// Returns the highest level with a populated entry on either side.
