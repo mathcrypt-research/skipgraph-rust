@@ -289,7 +289,7 @@ impl LookupTable for ArrayLookupTable {
     }
 
     /// Returns the list of left neighbors at the current node as a vector of tuples containing the level and identity.
-    fn left_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+    fn left_neighbors(&self) -> Vec<(usize, Identity)> {
         let inner = self.inner.read();
 
         let mut neighbors = Vec::new();
@@ -298,11 +298,11 @@ impl LookupTable for ArrayLookupTable {
                 neighbors.push((level, *identity));
             }
         }
-        Ok(neighbors)
+        neighbors
     }
 
     /// Returns the list of right neighbors at the current node as a vector of tuples containing the level and identity.
-    fn right_neighbors(&self) -> anyhow::Result<Vec<(usize, Identity)>> {
+    fn right_neighbors(&self) -> Vec<(usize, Identity)> {
         let inner = self.inner.read();
 
         let mut neighbors = Vec::new();
@@ -311,7 +311,17 @@ impl LookupTable for ArrayLookupTable {
                 neighbors.push((level, *identity));
             }
         }
-        Ok(neighbors)
+        neighbors
+    }
+
+    /// Implements [`LookupTable::max_populated_level`] under a single `inner.read()` guard, so
+    /// the left and right sides are inspected against the same snapshot of the table.
+    fn max_populated_level(&self) -> Option<LookupTableLevel> {
+        let inner = self.inner.read();
+
+        (0..LOOKUP_TABLE_LEVELS)
+            .rev()
+            .find(|&level| inner.left[level].is_some() || inner.right[level].is_some())
     }
 
     fn clone_box(&self) -> Box<dyn LookupTable> {

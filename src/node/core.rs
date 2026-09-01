@@ -2,7 +2,7 @@ use crate::core::model::direction::Direction;
 use crate::core::{
     IdSearchReq, IdSearchRes, Identifier, LookupTable, LookupTableLevel, MembershipVector,
 };
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use tracing::Span;
 
 /// Core is the pure-local interface for a skip-graph node's algorithms.
@@ -204,21 +204,7 @@ impl Core for BaseCore {
     }
 
     fn max_level(&self) -> anyhow::Result<LookupTableLevel> {
-        let left = self
-            .lt
-            .left_neighbors()
-            .context("failed to read left neighbors from lookup table")?;
-        let right = self
-            .lt
-            .right_neighbors()
-            .context("failed to read right neighbors from lookup table")?;
-
-        Ok(left
-            .iter()
-            .chain(right.iter())
-            .map(|(level, _)| *level)
-            .max()
-            .unwrap_or(0))
+        Ok(self.lt.max_populated_level().unwrap_or(0))
     }
 
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool {
