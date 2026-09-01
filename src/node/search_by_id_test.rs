@@ -41,7 +41,6 @@ fn test_search_by_id_networking_integration_relay() {
 
     let (expected_lvl, expected_identity) = lt
         .left_neighbors()
-        .unwrap()
         .into_iter()
         .filter(|(l, id)| *l <= search_request.level && id.id() >= search_request.target)
         .min_by_key(|(_, id)| id.id())
