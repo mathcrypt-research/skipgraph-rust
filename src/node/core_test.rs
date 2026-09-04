@@ -7,8 +7,8 @@ use crate::core::testutil::fixtures::{
     random_membership_vector, span_fixture,
 };
 use crate::core::{
-    ArrayLookupTable, IdSearchReq, Identifier, LookupTable, LookupTableMock, MembershipVector,
-    LOOKUP_TABLE_LEVELS,
+    ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableMock,
+    MembershipVector, RelinkOutcome, LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
 use anyhow::anyhow;
@@ -16,16 +16,17 @@ use rand::Rng;
 use std::sync::Arc;
 use unimock::*;
 
-fn make_core(id: Identifier, lt: Box<dyn LookupTable>) -> BaseCore {
-    BaseCore::new(span_fixture(), id, random_membership_vector(), lt)
-}
-
 /// Verifies `search_by_id` returns the core's own identifier when the lookup
 /// table is empty.
 #[test]
 fn test_search_by_id_singleton_fallback() {
     let origin_id = Identifier::from_bytes(&[10u8]).unwrap();
-    let core = make_core(origin_id, Box::new(ArrayLookupTable::new()));
+    let core = BaseCore::new(
+        span_fixture(),
+        origin_id,
+        random_membership_vector(),
+        Box::new(ArrayLookupTable::new()),
+    );
 
     let cases = [
         (Identifier::from_bytes(&[5u8]).unwrap(), Direction::Left),
@@ -63,7 +64,12 @@ fn test_search_by_id_found_left_direction() {
         )
         .expect("failed to update entry in lookup table");
 
-        let core = make_core(random_identifier(), Box::new(lt.clone()));
+        let core = BaseCore::new(
+            span_fixture(),
+            random_identifier(),
+            random_membership_vector(),
+            Box::new(lt.clone()),
+        );
         let req = IdSearchReq {
             nonce: Nonce::random(),
             origin: core.id(),
@@ -100,7 +106,12 @@ fn test_search_by_id_found_right_direction() {
         )
         .expect("failed to update entry in lookup table");
 
-        let core = make_core(random_identifier(), Box::new(lt.clone()));
+        let core = BaseCore::new(
+            span_fixture(),
+            random_identifier(),
+            random_membership_vector(),
+            Box::new(lt.clone()),
+        );
         let req = IdSearchReq {
             nonce: Nonce::random(),
             origin: core.id(),
@@ -143,7 +154,12 @@ fn test_search_by_id_not_found_left_direction() {
             .expect("failed to update entry in lookup table");
         }
 
-        let core = make_core(random_identifier(), Box::new(lt.clone()));
+        let core = BaseCore::new(
+            span_fixture(),
+            random_identifier(),
+            random_membership_vector(),
+            Box::new(lt.clone()),
+        );
         let req = IdSearchReq {
             nonce: Nonce::random(),
             origin: core.id(),
@@ -179,7 +195,12 @@ fn test_search_by_id_not_found_right_direction() {
             .expect("failed to update entry in lookup table");
         }
 
-        let core = make_core(random_identifier(), Box::new(lt.clone()));
+        let core = BaseCore::new(
+            span_fixture(),
+            random_identifier(),
+            random_membership_vector(),
+            Box::new(lt.clone()),
+        );
         let req = IdSearchReq {
             nonce: Nonce::random(),
             origin: core.id(),
@@ -199,7 +220,12 @@ fn test_search_by_id_not_found_right_direction() {
 #[test]
 fn test_search_by_id_exact_result() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
-    let core = make_core(random_identifier(), Box::new(lt.clone()));
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt.clone()),
+    );
 
     for lvl in 0..LOOKUP_TABLE_LEVELS {
         for direction in [Direction::Left, Direction::Right] {
@@ -226,7 +252,12 @@ fn test_search_by_id_exact_result() {
 fn test_search_by_id_concurrent_found_left_direction() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
     let target = random_identifier();
-    let core: Box<dyn Core> = Box::new(make_core(random_identifier(), Box::new(lt.clone())));
+    let core: Box<dyn Core> = Box::new(BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt.clone()),
+    ));
 
     assert_ne!(target, core.id());
 
@@ -280,7 +311,12 @@ fn test_search_by_id_concurrent_found_left_direction() {
 fn test_search_by_id_concurrent_right_direction() {
     let lt = random_lookup_table_with_extremes(LOOKUP_TABLE_LEVELS);
     let target = random_identifier();
-    let core: Box<dyn Core> = Box::new(make_core(random_identifier(), Box::new(lt.clone())));
+    let core: Box<dyn Core> = Box::new(BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt.clone()),
+    ));
 
     assert_ne!(target, core.id());
 
@@ -337,7 +373,12 @@ fn test_search_by_id_error_propagation() {
             .answers(&|_, _, _| Err(anyhow!("simulated lookup table error"))),
     );
 
-    let core = make_core(random_identifier(), Box::new(lt));
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt),
+    );
     let req = IdSearchReq {
         nonce: Nonce::random(),
         origin: core.id(),
@@ -366,7 +407,12 @@ fn test_search_by_id_error_propagation() {
 /// Verifies `max_level` returns 0 when the lookup table has no populated entries.
 #[test]
 fn test_max_level_empty_table() {
-    let core = make_core(random_identifier(), Box::new(ArrayLookupTable::new()));
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(ArrayLookupTable::new()),
+    );
 
     assert_eq!(core.max_level().unwrap(), 0);
 }
@@ -381,7 +427,12 @@ fn test_max_level_one_side_populated() {
     lt.update_entry(random_identity(), 5, Direction::Left)
         .expect("failed to update entry in lookup table");
 
-    let core = make_core(random_identifier(), Box::new(lt));
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt),
+    );
 
     assert_eq!(core.max_level().unwrap(), 5);
 }
@@ -396,7 +447,12 @@ fn test_max_level_both_sides_populated_different_levels() {
     lt.update_entry(random_identity(), 7, Direction::Right)
         .expect("failed to update entry in lookup table");
 
-    let core = make_core(random_identifier(), Box::new(lt));
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt),
+    );
 
     assert_eq!(core.max_level().unwrap(), 7);
 }
@@ -424,4 +480,84 @@ fn test_prefix_match() {
     assert!(core.prefix_match(mv_ones, common));
     // false case: required level exceeds the actual common-prefix length.
     assert!(!core.prefix_match(mv_ones, common + 1));
+}
+
+/// Verifies `Core::try_link` delegates to the lookup table: an empty slot is
+/// linked directly and the write is visible through the table.
+#[test]
+fn test_try_link_empty_slot() {
+    let lt = ArrayLookupTable::new();
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt.clone()),
+    );
+    let candidate = random_identity();
+
+    let outcome = core
+        .try_link(0, Direction::Left, candidate)
+        .expect("try_link failed");
+
+    assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+    assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(candidate));
+}
+
+/// Verifies `Core::try_relink` delegates to the lookup table: a slot already
+/// holding the claimant is reported as consistent and left untouched.
+#[test]
+fn test_try_relink_already_consistent() {
+    let lt = ArrayLookupTable::new();
+    let claimant = random_identity();
+    lt.update_entry(claimant, 0, Direction::Right)
+        .expect("failed to update entry in lookup table");
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(lt.clone()),
+    );
+
+    let outcome = core
+        .try_relink(0, Direction::Right, claimant)
+        .expect("try_relink failed");
+
+    assert_eq!(outcome, RelinkOutcome::AlreadyConsistent);
+    assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(claimant));
+}
+
+/// Verifies `Core::try_link` propagates the lookup table's out-of-range-level error.
+#[test]
+fn test_try_link_out_of_range_level() {
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(ArrayLookupTable::new()),
+    );
+
+    let result = core.try_link(LOOKUP_TABLE_LEVELS, Direction::Left, random_identity());
+
+    assert!(
+        result.is_err(),
+        "expected an error but got a success result"
+    );
+}
+
+/// Verifies `Core::try_relink` propagates the lookup table's out-of-range-level error.
+#[test]
+fn test_try_relink_out_of_range_level() {
+    let core = BaseCore::new(
+        span_fixture(),
+        random_identifier(),
+        random_membership_vector(),
+        Box::new(ArrayLookupTable::new()),
+    );
+
+    let result = core.try_relink(LOOKUP_TABLE_LEVELS, Direction::Left, random_identity());
+
+    assert!(
+        result.is_err(),
+        "expected an error but got a success result"
+    );
 }

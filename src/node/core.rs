@@ -1,6 +1,7 @@
 use crate::core::model::direction::Direction;
 use crate::core::{
-    IdSearchReq, IdSearchRes, Identifier, LookupTable, LookupTableLevel, MembershipVector,
+    IdSearchReq, IdSearchRes, Identifier, Identity, LinkOutcome, LookupTable, LookupTableLevel,
+    MembershipVector, RelinkOutcome,
 };
 use anyhow::anyhow;
 use tracing::Span;
@@ -59,6 +60,34 @@ pub trait Core: Send + Sync {
     /// * `candidate` - the membership vector to compare against this node's own.
     /// * `level` - the minimum required common-prefix length, in bits.
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool;
+
+    /// Decides whether `candidate` becomes this node's neighbor at `(level, direction)`. See
+    /// [`LookupTable::try_link`] for the decision rule.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL** — propagated from a failed decision on the local
+    /// lookup table: a broken local invariant, not evidence of anything a
+    /// peer sent.
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome>;
+
+    /// Decides whether `claimant` should become, or already is, this node's neighbor at
+    /// `(level, direction)`. See [`LookupTable::try_relink`] for the decision rule.
+    ///
+    /// # Errors
+    ///
+    /// Same failure mode as [`Self::try_link`].
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome>;
 
     /// Shallow-clones this core. Cloned instances share the same underlying
     /// state (lookup table, etc.) via Arc.
@@ -209,6 +238,24 @@ impl Core for BaseCore {
 
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool {
         self.mem_vec.common_prefix_bit(candidate) >= level
+    }
+
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome> {
+        self.lt.try_link(level, direction, candidate)
+    }
+
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome> {
+        self.lt.try_relink(level, direction, claimant)
     }
 
     fn clone_box(&self) -> Box<dyn Core> {
