@@ -41,7 +41,6 @@ impl NetworkHub {
         Ok(mock_network)
     }
 
-    // TODO: route_event should be a closure that embeds the origin_id.
     /// Routes an event to the appropriate mock network based on the target node identifier.
     pub fn route_event(
         &self,
