@@ -25,9 +25,18 @@ pub trait Core: Send + Sync {
 
     /// Performs a local search for the given identifier in the lookup table
     /// in the direction and up to the level specified by the request. The
-    /// result is the closest neighbor satisfying the directional constraint,
-    /// or — if no such neighbor exists at any level — the caller's own
+    /// result is the closest neighbor satisfying the directional constraint;
+    /// if no such neighbor exists at any level, the result is the caller's own
     /// identifier at level 0 (the Aspnes & Shah fallback).
+    ///
+    /// This fallback is only sound when the caller's own id already satisfies
+    /// `req.direction`'s relation to `req.target` at the time of the call. A relayed
+    /// request always has this property by construction (each hop is only ever
+    /// reached because the previous hop's own local search selected it as a
+    /// candidate already satisfying that relation), but the very first hop of a
+    /// request seeded against an arbitrary, externally-chosen node has no such
+    /// guarantee; whoever issues that first hop is responsible for choosing
+    /// `req.direction` so the property holds there too.
     fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Performs a local search for the given membership vector.
