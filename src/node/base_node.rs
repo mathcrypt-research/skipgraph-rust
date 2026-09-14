@@ -1,9 +1,12 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    Direction, IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel,
-    MaxLevelReq, MaxLevelRes, MembershipVector,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext,
+    LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq, NeighborRes,
 };
-use crate::network::Event::{GetMaxLevelOp, RetMaxLevelOp, SearchByIdRequest, SearchByIdResponse};
+use crate::network::Event::{
+    GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
+    SearchByIdResponse,
+};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
 use crate::network::{Event, EventProcessorCore, Network};
@@ -287,6 +290,69 @@ impl BaseNode {
             Err(_) => Err(anyhow!("timed out waiting for stage-1 search response")),
         }
     }
+
+    /// Asks `from` for its current neighbor entry on `direction` at level 0, part of
+    /// stage 1 of the join protocol.
+    ///
+    /// # Args
+    ///
+    /// * `from`, the node to query.
+    /// * `direction`, which of `from`'s own slots to query.
+    /// * `timeout`, how long to wait for `from`'s reply before giving up.
+    ///
+    /// # Returns
+    ///
+    /// `from`'s current neighbor on `direction` at level 0, or `None` if `from`
+    /// currently believes it has none there.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(from = ?from, direction = ?direction),
+        skip(self, timeout)
+    )]
+    async fn get_neighbor(
+        &self,
+        from: Identifier,
+        direction: Direction,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Identity>> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<NeighborRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::Neighbor(tx));
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                from,
+                GetNeighborOp(NeighborReq {
+                    nonce,
+                    origin: self.core.id(),
+                    level: 0,
+                    direction,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send get neighbor request: {}", e))?;
+        tracing::info!("sent get neighbor request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => Ok(res.neighbor),
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get neighbor response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get neighbor response")),
+        }
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -420,6 +486,42 @@ impl EventProcessorCore for BaseNode {
 
                 Ok(())
             }
+            RetNeighborOp(res) => {
+                let span = tracing::trace_span!(
+                    parent: &self.span,
+                    "ret_neighbor_op",
+                    origin = ?origin_id,
+                    level = ?res.level,
+                    direction = ?res.direction,
+                    neighbor = ?res.neighbor
+                );
+                let _enter = span.enter();
+
+                let mut request_id_map = self
+                    .request_id_map
+                    .lock()
+                    .expect("mutex was poisoned by a previous panic");
+                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Neighbor(_)))
+                {
+                    request_id_map.remove(&res.nonce)
+                } else {
+                    None
+                };
+                drop(request_id_map);
+
+                if let Some(Waiter::Neighbor(tx)) = waiter {
+                    if let Err(e) = tx.send(res) {
+                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+                    }
+                } else {
+                    // no waiter at this nonce, or the entry belongs to an unrelated
+                    // waiter variant: left untouched in the map, not this arm's
+                    // concern. log and move on.
+                    tracing::debug!("no matching neighbor waiter for nonce {:?}", res.nonce);
+                }
+
+                Ok(())
+            }
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
@@ -465,7 +567,7 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than,
+        random_address, random_identifier, random_identifier_greater_than, random_identity,
         random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
@@ -651,6 +753,85 @@ mod tests {
         .expect("test timed out");
 
         assert_eq!(anchor_result.expect("should resolve"), expected_anchor);
+    }
+
+    /// A single in-flight `get_neighbor` call resolves to the neighbor entry carried
+    /// by its correlated `RetNeighborOp` reply, and the outbound request carries the
+    /// caller-supplied `direction`.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let expected_neighbor = random_identity();
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            assert_eq!(req.direction, Direction::Right);
+                            assert_eq!(req.level, 0);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(from, Direction::Right, Duration::from_millis(200)),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: 0,
+                                direction: Direction::Right,
+                                neighbor: Some(expected_neighbor),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(
+            neighbor_result.expect("should resolve").map(|n| n.id()),
+            Some(expected_neighbor.id())
+        );
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
