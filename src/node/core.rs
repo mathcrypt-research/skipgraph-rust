@@ -129,7 +129,7 @@ impl BaseCore {
         mem_vec: MembershipVector,
         lt: Box<dyn LookupTable>,
     ) -> Self {
-        let span = tracing::span!(parent: &parent_span, tracing::Level::TRACE, "base_core", id = ?id, mem_vec = ?mem_vec);
+        let span = tracing::span!(parent: &parent_span, tracing::Level::DEBUG, "base_core", id = ?id, mem_vec = ?mem_vec);
         BaseCore {
             id,
             mem_vec,
