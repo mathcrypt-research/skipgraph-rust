@@ -1,4 +1,4 @@
-use crate::core::{Address, Identifier};
+use crate::core::Identifier;
 use crate::network::mock::network::MockNetwork;
 use crate::network::Event;
 use anyhow::anyhow;
@@ -26,11 +26,7 @@ impl NetworkHub {
     }
 
     /// Creates a new mock network with the given identifier and registers it in the hub.
-    pub fn new_mock_network(
-        hub: Self,
-        identifier: Identifier,
-        address: Address,
-    ) -> anyhow::Result<Arc<MockNetwork>> {
+    pub fn new_mock_network(hub: Self, identifier: Identifier) -> anyhow::Result<Arc<MockNetwork>> {
         let mut networks = hub.networks.write();
 
         if networks.contains_key(&identifier) {
@@ -40,7 +36,7 @@ impl NetworkHub {
             ));
         }
 
-        let mock_network = Arc::new(MockNetwork::new(identifier, hub.clone(), address));
+        let mock_network = Arc::new(MockNetwork::new(identifier, hub.clone()));
         networks.insert(identifier, mock_network.clone());
         Ok(mock_network)
     }
