@@ -1,5 +1,5 @@
 use crate::core::model::search::Nonce;
-use crate::core::{IdSearchRes, MaxLevelRes};
+use crate::core::{IdSearchRes, MaxLevelRes, NeighborRes};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -13,6 +13,8 @@ pub(super) enum Waiter {
     MaxLevel(oneshot::Sender<MaxLevelRes>),
     /// a pending `search_by_id` call, resolved by a `SearchByIdResponse`.
     AsyncSearch(oneshot::Sender<IdSearchRes>),
+    /// a pending `get_neighbor` call, resolved by a `RetNeighborOp`.
+    Neighbor(oneshot::Sender<NeighborRes>),
 }
 
 /// RAII guard that unconditionally removes a nonce's waiter-map entry on drop — ties
