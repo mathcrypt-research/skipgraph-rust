@@ -1,11 +1,12 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext,
-    LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq, NeighborRes,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext, LinkReq,
+    LinkRes, LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq,
+    NeighborRes, LOOKUP_TABLE_LEVELS,
 };
 use crate::network::Event::{
-    GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
-    SearchByIdResponse,
+    GetLinkOp, GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
+    SearchByIdResponse, SetLinkOp,
 };
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
@@ -289,6 +290,77 @@ impl BaseNode {
         }
     }
 
+    /// Sends `GetLinkOp` to `dest`, asking it to adopt `candidate` as its neighbor
+    /// on `side` at `level`, part of stage 1 of the join protocol.
+    ///
+    /// The resulting `SetLinkOp` reply is applied to this node's own lookup table by
+    /// `handle_set_link_response`, not by this method. By the time this method's
+    /// `await` resolves, that write has already happened, since both run on the same
+    /// synchronous event-processing path.
+    ///
+    /// # Args
+    ///
+    /// * `dest`, the node to send the link request to.
+    /// * `candidate`, this node's own identity, proposed as `dest`'s neighbor.
+    /// * `side`, receiver-owned, which of `dest`'s own slots `candidate` is
+    ///   proposed for.
+    /// * `level`, the lookup-table level at which the link is requested.
+    /// * `timeout`, how long to wait for a reply before giving up.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(dest = ?dest, side = ?side, level = ?level),
+        skip(self, candidate, timeout)
+    )]
+    async fn send_link_request(
+        &self,
+        dest: Identifier,
+        candidate: Identity,
+        side: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::Link(tx));
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                dest,
+                GetLinkOp(LinkReq {
+                    nonce,
+                    candidate,
+                    side,
+                    level,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send get link request: {}", e))?;
+        tracing::info!("sent get link request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => {
+                tracing::info!("resolved link request: linked = {:?}", res.linked);
+                Ok(())
+            }
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get link response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get link response")),
+        }
+    }
+
     /// Removes and returns the `nonce`-keyed waiter, but only when the map's current
     /// entry there matches `is_expected_variant`; a present but wrong-typed entry is
     /// left untouched rather than destroyed, since it may belong to a different
@@ -488,6 +560,61 @@ impl BaseNode {
         }
         Ok(())
     }
+
+    /// Handles an inbound `SetLinkOp`: applies the link to this node's own lookup
+    /// table, then resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, side = ?res.side, level = ?res.level, linked = ?res.linked),
+        skip(self, res)
+    )]
+    fn handle_set_link_response(&self, res: LinkRes) -> anyhow::Result<()> {
+        // this is the one and only write path for a lookup-table entry from a
+        // `SetLinkOp`. it is attempted unconditionally whenever `linked` is
+        // present and `level` is in range, independent of whether a matching
+        // waiter exists below. `try_link` itself may still leave the table
+        // untouched (its `LinkOutcome::Forward` case, when the existing entry
+        // already sits correctly), so "attempted" here does not guarantee a
+        // write occurred. `SetLinkOp` can also arrive unsolicited as a future
+        // repair-push correction, which must be attempted the same way
+        // regardless of any pending request.
+        //
+        // `res.level` is peer-controlled and, per the previous paragraph, has
+        // no accompanying local request to sanity-check it against — unlike
+        // `Core::try_link`'s own doc, which classifies every failure as this
+        // node's own broken invariant (CRITICAL, INTERNAL) on the assumption
+        // that `level` is already known-good by the time it's called. At this
+        // boundary that assumption doesn't hold, so an out-of-range `level` is
+        // classified RECOVERABLE, PEER-SAFE-detectable instead: it means a
+        // malformed or adversarial peer message, not a local invariant
+        // violation, so it's logged and the write is skipped rather than
+        // propagated as a hard error from this arm. A `try_link` failure at an
+        // in-range level (e.g. a poisoned local lock) is still that genuine
+        // CRITICAL, INTERNAL case and propagates as before.
+        if let Some(linked) = res.linked {
+            if res.level >= LOOKUP_TABLE_LEVELS {
+                tracing::warn!(
+                    "rejected set link op from peer with out-of-range level {}",
+                    res.level
+                );
+            } else {
+                self.core
+                    .try_link(res.level, res.side, linked)
+                    .map_err(|e| anyhow!("failed to apply link at level {}: {}", res.level, e))?;
+                tracing::trace!("applied link to own lookup table");
+            }
+        }
+
+        if let Some(Waiter::Link(tx)) =
+            self.take_waiter(res.nonce, "Link", |w| matches!(w, Waiter::Link(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -505,6 +632,7 @@ impl EventProcessorCore for BaseNode {
             RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
             GetNeighborOp(req) => self.handle_get_neighbor_request(req),
             RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
+            SetLinkOp(res) => self.handle_set_link_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
@@ -980,6 +1108,165 @@ mod tests {
             }),
         )
         .expect("failed to answer get neighbor request");
+    }
+
+    /// A single in-flight `send_link_request` call resolves once its correlated
+    /// `SetLinkOp` reply arrives, and that reply's `linked` identity is applied to
+    /// this node's own lookup table via the arm's own write path (not by
+    /// `send_link_request` itself).
+    #[tokio::test]
+    async fn test_send_link_request_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let dest = random_identifier();
+        let candidate = random_identity();
+        let linked_identity = random_identity();
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, event_dest: Identifier, event: Event| {
+                    assert_eq!(event_dest, dest, "expected request sent to dest");
+                    match event {
+                        GetLinkOp(req) => {
+                            assert_eq!(req.side, Direction::Right);
+                            assert_eq!(req.level, 0);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (send_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.send_link_request(
+                    dest,
+                    candidate,
+                    Direction::Right,
+                    0,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before send_link_request's
+                    // first await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            dest,
+                            SetLinkOp(LinkRes {
+                                nonce,
+                                side: Direction::Right,
+                                level: 0,
+                                linked: Some(linked_identity),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        send_result.expect("should resolve");
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked_identity.id()),
+            "the SetLinkOp arm should have applied the link to this node's own table"
+        );
+    }
+
+    /// A `SetLinkOp` whose `level` is out of range for the lookup table (a
+    /// peer-controlled value, since `SetLinkOp` may arrive unsolicited with no
+    /// accompanying local request to validate it against) is rejected without
+    /// erroring the whole event and without touching the lookup table, while any
+    /// pending `Waiter::Link` at that nonce is still resolved: the table-write and
+    /// the waiter-resolution are independent paths.
+    #[tokio::test]
+    async fn test_set_link_op_rejects_out_of_range_level() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let linked_identity = random_identity();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map
+            .lock()
+            .expect("mutex poisoned")
+            .insert(nonce, Waiter::Link(tx));
+
+        let result = node.process_incoming_event(
+            origin,
+            SetLinkOp(LinkRes {
+                nonce,
+                side: Direction::Left,
+                level: LOOKUP_TABLE_LEVELS,
+                linked: Some(linked_identity),
+            }),
+        );
+        assert!(
+            result.is_ok(),
+            "an out-of-range level must not error the whole event"
+        );
+
+        let resolved = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("test timed out")
+            .expect("the waiter must still resolve regardless of the rejected write");
+        assert_eq!(resolved.nonce, nonce);
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error"),
+            None,
+            "the out-of-range write must never reach the lookup table"
+        );
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
