@@ -280,3 +280,14 @@ fn test_event_processor_clone_functionality() {
     assert!(core_processor.has_seen("Processor clone test 1"));
     assert!(core_processor.has_seen("Processor clone test 2"));
 }
+
+/// Verifies `MockNetwork::address` returns the address supplied to `new_mock_network`.
+#[test]
+fn test_mock_network_address() {
+    let hub = NetworkHub::new();
+    let identifier = random_identifier();
+    let address = random_address();
+    let mock_network = NetworkHub::new_mock_network(hub, identifier, address).unwrap();
+
+    assert_eq!(mock_network.address(), address);
+}
