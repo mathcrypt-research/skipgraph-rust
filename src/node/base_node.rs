@@ -83,7 +83,7 @@ impl BaseNode {
     }
 
     pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
-        let span = tracing::trace_span!("search_by_id", target = ?req.target, level = ?req.level);
+        let span = tracing::trace_span!(parent: &self.span, "search_by_id", target = ?req.target, level = ?req.level);
         let _enter = span.enter();
 
         tracing::trace!("searching for target {:?}", req.target);
