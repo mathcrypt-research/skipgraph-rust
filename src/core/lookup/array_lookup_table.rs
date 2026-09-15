@@ -166,76 +166,42 @@ impl LookupTable for ArrayLookupTable {
         Ok(entry)
     }
 
-    /// Atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
-    /// whether the existing entry there already sits strictly between this node and `candidate`
-    /// and the request should be forwarded. Runs entirely under a single `inner.write()` guard —
-    /// the compare, the decision, and the (conditional) write all happen under one lock
-    /// acquisition.
+    /// Implements [`LookupTable::try_link`] by delegating to [`LookupTable::try_relink`] and
+    /// mapping its outcome as follows.
     ///
-    /// This method never calls `get_entry`/`update_entry`, whose separately-locked critical
-    /// sections could not be composed into one atomic decision: two concurrent callers linking
-    /// the same `(level, direction)` slot could both read the same stale entry under their own
-    /// `get_entry` call, both independently decide to insert, and both call `update_entry` —
-    /// the second silently clobbers the first, with no forwarding ever evaluated against the
-    /// true post-first-write state.
+    /// - [`RelinkOutcome::Forward`] becomes [`LinkOutcome::Forward`] carrying the same neighbor.
+    /// - [`RelinkOutcome::AlreadyConsistent`] and [`RelinkOutcome::Relinked`] both become
+    ///   [`LinkOutcome::LinkedDirectly`]. A first-time candidate's caller has no use for the
+    ///   eviction detail. A candidate that already holds the slot leaves the table in the same
+    ///   state a fresh install would, because [`Identity`] equality is structural over every
+    ///   field (id, membership vector, address), so the skipped write and the overwrite are
+    ///   indistinguishable.
     fn try_link(
         &self,
         level: LookupTableLevel,
         direction: Direction,
         candidate: Identity,
     ) -> anyhow::Result<LinkOutcome> {
-        if level >= LOOKUP_TABLE_LEVELS {
-            return Err(anyhow!(
-                "position is larger than the max lookup table entry number: {}",
-                level
-            ));
+        match self.try_relink(level, direction, candidate)? {
+            RelinkOutcome::Forward(existing) => Ok(LinkOutcome::Forward(existing)),
+            RelinkOutcome::AlreadyConsistent | RelinkOutcome::Relinked { .. } => {
+                Ok(LinkOutcome::LinkedDirectly)
+            }
         }
-
-        let mut inner = self.inner.write();
-
-        let existing = match direction {
-            Direction::Left => inner.left[level],
-            Direction::Right => inner.right[level],
-        };
-
-        // an existing entry sits strictly between this node and the candidate when, for
-        // Direction::Right, existing.id() < candidate.id(); for Direction::Left,
-        // existing.id() > candidate.id() — it is then closer to the candidate's true position
-        // than this node is, so the slot is left untouched and the decision is to forward.
-        let outcome = match (existing, direction) {
-            (Some(existing), Direction::Right) if existing.id() < candidate.id() => {
-                LinkOutcome::Forward(existing)
-            }
-            (Some(existing), Direction::Left) if existing.id() > candidate.id() => {
-                LinkOutcome::Forward(existing)
-            }
-            _ => {
-                match direction {
-                    Direction::Left => inner.left[level] = Some(candidate),
-                    Direction::Right => inner.right[level] = Some(candidate),
-                }
-                LinkOutcome::LinkedDirectly
-            }
-        };
-
-        // Log the try_link decision
-        tracing::trace!(
-            "try_link decision at level {} in direction {}: candidate {}, outcome {:?}",
-            level,
-            direction,
-            candidate.id(),
-            outcome
-        );
-
-        Ok(outcome)
     }
 
-    /// Implements [`LookupTable::try_relink`] — see that doc for what `claimant` means and what
-    /// each [`RelinkOutcome`] variant represents. Runs entirely under a single `inner.write()`
-    /// guard, for the same reason `try_link` does: composing separately-locked
-    /// `get_entry`/`update_entry` calls would reopen a race between two concurrent repair probes
-    /// for the same slot, each reading the same stale entry and clobbering the other's write
-    /// without ever forwarding against the true post-write state.
+    /// Implements [`LookupTable::try_relink`], and through delegation [`LookupTable::try_link`]
+    /// as well. See the trait docs for what `claimant` means and what each [`RelinkOutcome`]
+    /// variant represents.
+    ///
+    /// The compare, the decision, and the conditional write all run under one `inner.write()`
+    /// guard. This is the only critical section behind both entry points, so any two concurrent
+    /// callers on the same `(level, direction)` slot serialize here, whether they are two link
+    /// requests, two repair probes, or one of each. Composing separately-locked
+    /// `get_entry`/`update_entry` calls instead would reopen a race between them. Both could read
+    /// the same stale entry, both could decide to write, and the second write would silently
+    /// clobber the first, with forwarding never evaluated against the true post-first-write
+    /// state.
     fn try_relink(
         &self,
         level: LookupTableLevel,
@@ -257,8 +223,8 @@ impl LookupTable for ArrayLookupTable {
         };
 
         // three-way decision against the single read of `existing` above, all inside this one
-        // write-lock critical section: already-equal is a no-op; strictly-between (same
-        // per-direction comparison as try_link) forwards; anything else relinks and evicts.
+        // write-lock critical section. an already-equal entry is a no-op, a strictly-between
+        // entry forwards, and anything else relinks and evicts.
         let outcome = match (existing, direction) {
             (Some(existing), _) if existing == claimant => RelinkOutcome::AlreadyConsistent,
             (Some(existing), Direction::Right) if existing.id() < claimant.id() => {
@@ -276,9 +242,8 @@ impl LookupTable for ArrayLookupTable {
             }
         };
 
-        // Log the try_relink decision
         tracing::trace!(
-            "try_relink decision at level {} in direction {}: claimant {}, outcome {:?}",
+            "link decision at level {} in direction {} for identifier {} resolved to {:?}",
             level,
             direction,
             claimant.id(),
