@@ -21,7 +21,7 @@ struct InnerMockNetwork {
 }
 
 impl MockNetwork {
-    /// Creates a new instance of MockNetwork with the given NetworkHub.
+    /// Creates a new instance of MockNetwork with the given identifier, hub, and address.
     pub fn new(id: Identifier, hub: NetworkHub, address: Address) -> Self {
         MockNetwork {
             core: Arc::new(RwLock::new(InnerMockNetwork {
