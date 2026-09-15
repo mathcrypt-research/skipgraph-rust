@@ -64,6 +64,11 @@ pub trait Core: Send + Sync {
     /// Decides whether `candidate` becomes this node's neighbor at `(level, direction)`. See
     /// [`LookupTable::try_link`] for the decision rule.
     ///
+    /// # Preconditions
+    ///
+    /// Same precondition as [`LookupTable::try_link`]: callers must ensure `candidate` actually
+    /// belongs on the `direction` side of this node before calling.
+    ///
     /// # Errors
     ///
     /// **CRITICAL, INTERNAL** — propagated from a failed decision on the local
@@ -78,6 +83,11 @@ pub trait Core: Send + Sync {
 
     /// Decides whether `claimant` should become, or already is, this node's neighbor at
     /// `(level, direction)`. See [`LookupTable::try_relink`] for the decision rule.
+    ///
+    /// # Preconditions
+    ///
+    /// Same precondition as [`LookupTable::try_relink`]: callers must ensure `claimant` actually
+    /// belongs on the `direction` side of this node before calling.
     ///
     /// # Errors
     ///
