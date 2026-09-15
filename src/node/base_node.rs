@@ -164,7 +164,7 @@ impl BaseNode {
     ///   seeded level.
     /// * **RECOVERABLE** — the reply channel is dropped before a reply arrives.
     /// * **RECOVERABLE** — `timeout` elapses before a reply arrives.
-#[tracing::instrument(level = "trace", parent = &self.span, fields(introducer = ?introducer), skip(self, timeout))]
+    #[tracing::instrument(level = "trace", parent = &self.span, fields(introducer = ?introducer), skip(self, timeout))]
     pub(crate) async fn get_max_level(
         &self,
         introducer: Identifier,
