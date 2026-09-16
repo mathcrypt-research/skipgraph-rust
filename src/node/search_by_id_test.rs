@@ -8,7 +8,7 @@ use crate::core::testutil::fixtures::{
 };
 use crate::core::{IdSearchReq, Identifier, LookupTable, LOOKUP_TABLE_LEVELS};
 use crate::network::{Event, EventProcessorCore, NetworkMock};
-use crate::node::core::BaseCore;
+use crate::node::testutil::make_core;
 use std::sync::Arc;
 use unimock::*;
 
@@ -68,12 +68,7 @@ fn test_search_by_id_networking_integration_relay() {
             .answers(&|mock| Box::new(mock.clone())),
     ));
 
-    let core = Box::new(BaseCore::new(
-        span_fixture(),
-        node_id,
-        random_membership_vector(),
-        Box::new(lt.clone()),
-    ));
+    let core = Box::new(make_core(node_id, Box::new(lt.clone())));
     let node =
         BaseNode::new(span_fixture(), core, Box::new(mock_net)).expect("failed to create BaseNode");
 
@@ -129,12 +124,7 @@ fn test_search_by_id_networking_integration_target_is_this_node() {
             .answers(&|mock| Box::new(mock.clone())),
     ));
 
-    let core = Box::new(BaseCore::new(
-        span_fixture(),
-        node_id,
-        random_membership_vector(),
-        Box::new(lt.clone()),
-    ));
+    let core = Box::new(make_core(node_id, Box::new(lt.clone())));
     let node =
         BaseNode::new(span_fixture(), core, Box::new(mock_net)).expect("failed to create BaseNode");
 
