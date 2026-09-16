@@ -243,7 +243,7 @@ impl LookupTable for ArrayLookupTable {
         };
 
         tracing::trace!(
-            "link decision at level {} in direction {} for identifier {} resolved to {:?}",
+            "relink decision at level {} in direction {} for identifier {} resolved to {:?}",
             level,
             direction,
             claimant.id(),
