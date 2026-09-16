@@ -1,7 +1,7 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel, MaxLevelReq,
-    MaxLevelRes, MembershipVector,
+    Direction, IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel,
+    MaxLevelReq, MaxLevelRes, MembershipVector,
 };
 use crate::network::Event::{GetMaxLevelOp, RetMaxLevelOp, SearchByIdRequest, SearchByIdResponse};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
@@ -206,6 +206,87 @@ impl BaseNode {
             Err(_) => Err(anyhow!("timed out waiting for get max level response")),
         }
     }
+
+    /// Sends `SearchByIdRequest` directly to `introducer`, bypassing this node's own
+    /// local search entirely. Stage 1's search must not run `Core::search_by_id`
+    /// against this node's own (still empty, pre-join) table first, since that
+    /// method's local-first fallback would immediately return this node's own
+    /// identifier and short-circuit before ever contacting `introducer`. Resolved by
+    /// the existing `SearchByIdResponse` handling in `process_incoming_event`, which
+    /// also checks for a [`Waiter::AsyncSearch`] alongside its blocking-caller
+    /// `Waiter::Search` counterpart.
+    ///
+    /// `Core::search_by_id`'s relay chain preserves, at every hop after the first, the
+    /// invariant that the local candidate search is only ever asked of a node already
+    /// known to satisfy `direction`'s relation to `target` (that's how each hop got
+    /// selected as the previous hop's candidate), so its self-fallback ("no better
+    /// candidate, terminate here") is only sound once that invariant already holds at
+    /// the very first hop. The caller is responsible for choosing `direction` such
+    /// that `introducer` itself already satisfies it relative to this node's own id.
+    ///
+    /// # Args
+    ///
+    /// * `introducer`, the node to search from.
+    /// * `direction`, the search direction; the caller must ensure `introducer`'s own
+    ///   id already satisfies this direction's relation to this node's own id.
+    /// * `level`, the starting lookup-table level for the search, typically seeded
+    ///   by [`Self::get_max_level`].
+    /// * `timeout`, how long to wait for the terminal node's reply before giving up.
+    ///
+    /// # Returns
+    ///
+    /// The identifier of the search's terminal node.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(introducer = ?introducer, direction = ?direction, level = ?level),
+        skip(self, timeout)
+    )]
+    async fn search_stage1_anchor(
+        &self,
+        introducer: Identifier,
+        direction: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<Identifier> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<IdSearchRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::AsyncSearch(tx));
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                introducer,
+                SearchByIdRequest(IdSearchReq {
+                    nonce,
+                    target: self.core.id(),
+                    origin: self.core.id(),
+                    level,
+                    direction,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send stage-1 search request: {}", e))?;
+        tracing::info!("sent stage-1 search request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => Ok(res.result),
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive stage-1 search response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for stage-1 search response")),
+        }
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -279,22 +360,36 @@ impl EventProcessorCore for BaseNode {
                     .request_id_map
                     .lock()
                     .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Search(_))) {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
+                let waiter = match request_id_map.get(&res.nonce) {
+                    Some(Waiter::Search(_)) | Some(Waiter::AsyncSearch(_)) => {
+                        request_id_map.remove(&res.nonce)
+                    }
+                    _ => None,
                 };
                 drop(request_id_map);
 
-                if let Some(Waiter::Search(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+                match waiter {
+                    Some(Waiter::Search(tx)) => {
+                        if let Err(e) = tx.send(res) {
+                            tracing::warn!(
+                                "failed to send the response to the receiver end: {:?}",
+                                e
+                            )
+                        }
                     }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::MaxLevel` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
+                    Some(Waiter::AsyncSearch(tx)) => {
+                        if tx.send(res).is_err() {
+                            tracing::warn!(
+                                "failed to send the async search response to the receiver end"
+                            )
+                        }
+                    }
+                    _ => {
+                        // no waiter at this nonce, or the entry belongs to an unrelated
+                        // waiter variant: left untouched in the map, not this arm's
+                        // concern. log and move on.
+                        tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
+                    }
                 }
 
                 Ok(())
@@ -318,8 +413,8 @@ impl EventProcessorCore for BaseNode {
                     }
                 } else {
                     // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::Search` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
+                    // waiter variant: left untouched in the map, not this arm's
+                    // concern. log and move on.
                     tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
                 }
 
@@ -474,6 +569,88 @@ mod tests {
         .expect("test timed out");
 
         assert_eq!(level_result.expect("should resolve"), expected_level);
+    }
+
+    /// A single in-flight `search_stage1_anchor` call resolves to the identifier
+    /// carried by its correlated `SearchByIdResponse` reply, and the outbound request
+    /// carries the caller-supplied `direction`.
+    #[tokio::test]
+    async fn test_search_stage1_anchor_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let introducer = random_identifier();
+        let expected_anchor = random_identifier();
+        let search_level: LookupTableLevel = 3;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, introducer, "expected request sent to the introducer");
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(req.direction, Direction::Right);
+                            assert_eq!(req.level, search_level);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (anchor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.search_stage1_anchor(
+                    introducer,
+                    Direction::Right,
+                    search_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before search_stage1_anchor's
+                    // first await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            introducer,
+                            SearchByIdResponse(IdSearchRes {
+                                nonce,
+                                target: id,
+                                termination_level: search_level,
+                                result: expected_anchor,
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(anchor_result.expect("should resolve"), expected_anchor);
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
