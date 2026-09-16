@@ -1,7 +1,7 @@
 # Concurrent Node Insertion — Protocol Design
 
-Status: design spec, not yet implemented. Target: `rust-developer`, via the `generic-rust`
-develop → review loop.
+Status: Phase 0 (bootstrap) and Phase 1 (Stage 1, level-0 linking) are implemented. Sections 3.3
+onward remain design spec. Target: `rust-developer`, via the `generic-rust` develop → review loop.
 
 Authority: Aspnes & Shah, "Skip Graphs" (`arXiv:cs/0306043`), Algorithm 2 (insert) and Algorithm 8
 (fault-tolerant / backpointer repair). All algorithm content below is restated in this repo's own
@@ -128,51 +128,78 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
 
 ### 3.2 Phase 1 — Stage 1, level-0 linking
 
-3. `u → introducer`: `SearchByIdRequest(IdSearchReq{ nonce, target: u.id(), origin: u.id(), level:
-   max_level, direction: Direction::Right })` — **reuses the existing search machinery unmodified**,
-   relayed exactly as today. `Direction::Right` search semantics ("greatest identifier ≤ target") is
-   exactly "largest existing node with key < `u.id()`" once `u` isn't itself in the graph yet.
-4. Terminal node replies `SearchByIdResponse(IdSearchRes{ ..., result: s_id })` directly to `u`. Call
-   the node at `s_id` — `s`.
+3. **Direction depends on where `introducer` sits relative to `u`.** `search_by_id`'s relay chain only
+   preserves its directional guarantee (each hop is only ever asked of a node already known to satisfy
+   `direction`'s relation to `target`) from the *second* hop onward, since each later hop earned that
+   guarantee by being selected as the previous hop's candidate. The very first hop, an arbitrary
+   externally-supplied `introducer`, has no such guarantee unless `u` picks `direction` so that
+   `introducer` itself already satisfies it:
+   - If `introducer.id() < u.id()`: `u → introducer`: `SearchByIdRequest(IdSearchReq{ nonce, target:
+     u.id(), origin: u.id(), level: max_level, direction: Direction::Right })`. This **reuses the
+     existing search machinery unmodified**, relayed exactly as today. `Direction::Right` search semantics
+     ("greatest identifier ≤ target") resolves `u`'s predecessor `s` directly.
+   - If `introducer.id() > u.id()`: the same request with `direction: Direction::Left` instead.
+     `Direction::Left` search semantics ("smallest identifier ≥ target") resolves `u`'s successor `z`
+     directly.
+   - `introducer.id() == u.id()` is an id collision, not a case either branch resolves. `u` surfaces
+     this as a typed error to its own caller and sends no request at all, rather than guessing a
+     direction.
+
+4. Terminal node replies `SearchByIdResponse(IdSearchRes{ ..., result })` directly to `u`. The node at
+   `result` is called `s` when the search ran `Direction::Right`, or `z` when it ran `Direction::Left`.
 
    *Edge case:* if the graph currently has exactly one node (the introducer itself, with an empty
-   table), `search_by_id`'s existing fallback returns the introducer's own id — `s` = introducer. No
-   special-casing needed; Stage 1 proceeds identically.
+   table), `search_by_id`'s existing fallback returns the introducer's own id. This still needs no
+   special-casing beyond picking the right branch above: when `u.id() > introducer.id()`, that id is
+   `s`; when `u.id() < introducer.id()`, it is `z` instead, and step 5 below queries it on
+   `Direction::Left` rather than `Direction::Right`.
 
-5. `u → s`: `GetNeighborOp{ nonce, origin: u.id(), level: 0, direction: Direction::Right }`.
-6. `s → u`: `RetNeighborOp{ nonce, level: 0, direction: Direction::Right, neighbor }`, where `neighbor`
-   is `s`'s current right-neighbor entry (`Option<Identity>`), possibly `None` if `s` currently
-   believes itself the tail. Call this candidate `z` when present.
+5. `u` queries whichever node the search resolved, on the *same* direction the search used:
+   `u → result`: `GetNeighborOp{ nonce, origin: u.id(), level: 0, direction }` (the same `direction`
+   as step 3).
+6. `result → u`: `RetNeighborOp{ nonce, level: 0, direction, neighbor }`, where `neighbor` is
+   `result`'s own neighbor entry on that same direction (`Option<Identity>`), possibly `None` if
+   `result` currently believes it has none there. This is `z` when the search resolved `s` (queried on
+   `Direction::Right`), or `s` when the search resolved `z` (queried on `Direction::Left`).
 
 7. `u` now sends **two independent, concurrent** requests:
-   - `u → s`: `GetLinkOp{ nonce, candidate: u_identity, side: Direction::Right, level: 0 }` — "install
-     me as your right neighbor," i.e. `s` becomes `u`'s left neighbor.
-   - `u → z` (only if `z` is `Some`): `GetLinkOp{ nonce, candidate: u_identity, side: Direction::Left,
-     level: 0 }` — "install me as your left neighbor," i.e. `z` becomes `u`'s right neighbor.
+   - `u → result` (the node the search itself resolved in step 4, always known, unconditional):
+     `GetLinkOp{ nonce, candidate: u_identity, side: direction, level: 0 }`, offering `u` for
+     `result`'s slot on the search's own direction. When the search ran `Direction::Right`
+     (`result` is `s`), this offers `u` as `s`'s right neighbor, i.e. `s` becomes `u`'s left neighbor.
+     When it ran `Direction::Left` (`result` is `z`), this offers `u` as `z`'s left neighbor, i.e. `z`
+     becomes `u`'s right neighbor.
+   - `u → (the neighbor found in step 6)` (only if that neighbor is `Some`): `GetLinkOp{ nonce,
+     candidate: u_identity, side: opposite(direction), level: 0 }`, offering `u` for that neighbor's
+     slot on the side opposite the search direction. When `direction` was `Right`, this is `u → z`,
+     offering `u` as `z`'s left neighbor, i.e. `z` becomes `u`'s right neighbor. When `direction` was
+     `Left`, this is `u → s`, offering `u` as `s`'s right neighbor, i.e. `s` becomes `u`'s left
+     neighbor.
 
    **Important asymmetry, stated explicitly because it is easy to get wrong:** the `s`-chain can only
    ever resolve `u`'s **left** neighbor (every hop it takes fills someone's `right` slot with `u`), and
    the `z`-chain can only ever resolve `u`'s **right** neighbor (every hop fills someone's `left` slot).
-   They are not redundant attempts at the same slot; they resolve `u`'s two sides independently, and
-   forwarding within *each* chain (Section 4) only protects against concurrent inserts landing within
-   *that* chain's span — it does not cross over to fix the other side.
+   This holds regardless of which chain the search itself resolved directly and which it reached via
+   the step-5 neighbor query. They are not redundant attempts at the same slot. They resolve `u`'s two
+   sides independently, and forwarding within *each* chain (Section 4) only protects against concurrent
+   inserts landing within *that* chain's span, it does not cross over to fix the other side.
 
-   Consequently: if `z` was `None` at query time but a concurrent insert lands to `u`'s right *before*
-   or *while* `u`'s `s`-request is in flight, `u`'s right side is left **unresolved** (`None`) at the
-   end of Stage 1. This is expected, not a bug — see Section 5.3, healed by Algorithm 8.
+   Consequently: if the step-6 neighbor query resolved `None` but a concurrent insert lands on that same
+   side *before* or *while* the other request is in flight, that side is left **unresolved** (`None`) at
+   the end of Stage 1. This is expected, not a bug. See Section 5.3, healed by Algorithm 8.
 
 8. Each `GetLinkOp` is handled via `change_neighbor`/`try_link` (Section 4); the terminal accepting
    node replies `SetLinkOp{ nonce, side: opposite(side), level: 0, linked: Some(accepting_node's
    Identity) }` directly to `u`. `side` is receiver-owned (Section 2), so the
-   reply names the slot in `u`'s **own** table — the mirror of the slot `u` was just installed into —
+   reply names the slot in `u`'s **own** table, the mirror of the slot `u` was just installed into,
    hence the explicit flip, identical to the `opposite(side)` Section 6.2 writes for repair
-   corrections. `u` applies each reply to its own table via the same `try_link` primitive (Section 4) — there
-   is exactly one code path in this design that ever writes a lookup-table entry, whether the write is
-   `u` installing its own neighbor, a peer installing `u`, or a repair correction (Section 6).
+   corrections. `u` applies each reply to its own table via the same `try_link` primitive (Section 4).
+   There is exactly one code path in this design that ever writes a lookup-table entry, whether the
+   write is `u` installing its own neighbor, a peer installing `u`, or a repair correction (Section 6).
 
-Stage 1 is complete once `u` has resolved both sides (received a `SetLinkOp` for the `z`-request if one
-was sent, or has recorded `None` immediately if no `z` was known) — `u` does **not** block Stage 2 on an
-unresolved side; it proceeds with whatever it has.
+Stage 1 is complete once `u` has resolved both sides (received a `SetLinkOp` for the step-6-query
+request if one was sent, or has recorded `None` immediately if no neighbor was known there). `u` does
+**not** block Stage 2 on an unresolved side; it proceeds with whatever it has.
 
 ### 3.3 Phase 2 — Stage 2, climbing
 

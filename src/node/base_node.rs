@@ -425,6 +425,129 @@ impl BaseNode {
             Err(_) => Err(anyhow!("timed out waiting for get link response")),
         }
     }
+
+    /// Drives stage 1, level-0 linking, of the join protocol for this not-yet-joined
+    /// node.
+    ///
+    /// `introducer` is an arbitrary, externally-supplied node with no guaranteed
+    /// position relative to this node's own id, so the search direction cannot be
+    /// fixed: this node picks `Direction::Right` when `introducer`'s id is less than
+    /// its own (searching for its predecessor `s`, mirroring today's single-branch
+    /// behavior) and `Direction::Left` when `introducer`'s id is greater (searching
+    /// for its successor `z` instead), in both cases so `introducer` itself already
+    /// satisfies the chosen direction's relation to this node's own id, which is what
+    /// makes `Core::search_by_id`'s relay chain (and its self-terminating fallback)
+    /// sound starting from the very first hop. `introducer`'s id equal to this node's
+    /// own is an id collision, not something either branch resolves.
+    ///
+    /// Whichever node the search resolves is queried, on the same direction, for its
+    /// own neighbor there; that query's answer, if any, sits on the opposite side.
+    /// This reproduces `s` and `z` exactly as the two-branch structure above intends:
+    /// searching right resolves `s` directly and queries `s`'s own right neighbor for
+    /// `z`; searching left resolves `z` directly and queries `z`'s own left neighbor
+    /// for `s`. The node the search resolved always gets offered the search's own
+    /// direction as its `GetLinkOp` side (`s` is always offered `Direction::Right`,
+    /// `z` always `Direction::Left`), and the neighbor-query result, when present, is
+    /// always offered the opposite side. The two requests are sent concurrently and
+    /// each resolves a structurally different side of this node's own table, so
+    /// neither is redundant with the other.
+    ///
+    /// When the neighbor query resolves to `None`, no request is ever sent for that
+    /// side. That is expected, not an error, this node's corresponding side (its
+    /// right side when searching right, its left side when searching left, i.e. when
+    /// this node is becoming the new largest or smallest node reachable from
+    /// `introducer`, respectively) is simply left unresolved for now, to be healed
+    /// later by background repair, which is out of this method's scope. The search's
+    /// own result always resolves, since the graph is non-empty by construction.
+    /// Every `SetLinkOp` reply this method waits on is applied to this node's own
+    /// table by `process_incoming_event`, not by this method.
+    ///
+    /// # Args
+    ///
+    /// * `introducer`, an already-joined node used to seed the stage-1 search.
+    /// * `max_level`, the starting lookup-table level for the stage-1 search,
+    ///   typically `introducer`'s own reply to [`Self::get_max_level`].
+    /// * `timeout`, the bound applied to every individual round trip this method
+    ///   performs.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** `introducer`'s id equals this node's own id.
+    /// * **RECOVERABLE, INTERNAL.** Any of the underlying round trips fails to send,
+    ///   has its reply channel dropped, or times out.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(introducer = ?introducer, max_level = ?max_level),
+        skip(self, timeout)
+    )]
+    pub(crate) async fn join_stage1_link_level0(
+        &self,
+        introducer: Identifier,
+        max_level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let own_id = self.core.id();
+        let search_direction = if introducer < own_id {
+            Direction::Right
+        } else if introducer > own_id {
+            Direction::Left
+        } else {
+            return Err(anyhow!(
+                "introducer id collides with this node's own id, cannot determine stage-1 search direction"
+            ));
+        };
+        let query_direction = match search_direction {
+            Direction::Right => Direction::Left,
+            Direction::Left => Direction::Right,
+        };
+
+        let search_result = self
+            .search_stage1_anchor(introducer, search_direction, max_level, timeout)
+            .await?;
+        tracing::info!(
+            "resolved stage-1 search anchor {:?} on {:?}",
+            search_result,
+            search_direction
+        );
+
+        let query_result = self
+            .get_neighbor(search_result, search_direction, timeout)
+            .await?;
+
+        let u_identity = Identity::new(own_id, self.core.mem_vec(), self.net.address());
+
+        let search_link =
+            self.send_link_request(search_result, u_identity, search_direction, 0, timeout);
+        match query_result {
+            Some(query_identity) => {
+                tracing::info!(
+                    "resolved stage-1 neighbor query result {:?} on {:?}",
+                    query_identity,
+                    query_direction
+                );
+                let query_link = self.send_link_request(
+                    query_identity.id(),
+                    u_identity,
+                    query_direction,
+                    0,
+                    timeout,
+                );
+                let (search_res, query_res) = tokio::join!(search_link, query_link);
+                search_res?;
+                query_res?;
+            }
+            None => {
+                tracing::info!(
+                    "no neighbor at query time on {:?}, that side left unresolved",
+                    query_direction
+                );
+                search_link.await?;
+            }
+        }
+
+        tracing::info!("stage-1 (level-0) join linking complete");
+        Ok(())
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -712,8 +835,8 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than, random_identity,
-        random_membership_vector, span_fixture,
+        random_address, random_identifier, random_identifier_greater_than,
+        random_identifier_less_than, random_identity, random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
@@ -1416,6 +1539,194 @@ mod tests {
                 .expect_err("aborted task should yield a join error")
                 .is_cancelled(),
             "expected the join error to report cancellation"
+        );
+    }
+
+    /// With `introducer.id() < u.id()` (the search-right branch) and both `s` and `z`
+    /// present, both `GetLinkOp`s are answered with a confirming `SetLinkOp`, and
+    /// `join_stage1_link_level0` resolves once each reply is applied to this node's
+    /// own table. The `s`-reply lands on the left slot, the `z`-reply on the right,
+    /// per the documented asymmetry.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_links_both_sides() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let introducer = random_identifier_less_than(&node_id);
+        let s_identity = random_identity();
+        let z_identity = random_identity();
+        let s_id = s_identity.id();
+        let z_id = z_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let s_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let z_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let (search_mock, neighbor_mock, s_link_mock, z_link_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            s_link_nonce_cell.clone(),
+            z_link_nonce_cell.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "introducer.id() < u.id() must search Direction::Right"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, s_id, "neighbor query must go to s");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == s_id => {
+                            assert_eq!(
+                                req.side,
+                                Direction::Right,
+                                "s's side must be Direction::Right"
+                            );
+                            *s_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == z_id => {
+                            assert_eq!(
+                                req.side,
+                                Direction::Left,
+                                "z's side must be Direction::Left"
+                            );
+                            *z_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce = loop {
+                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: s_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce = loop {
+                if let Some(n) = *neighbor_nonce_cell.lock().expect("mutex poisoned") {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Right,
+                        neighbor: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let (s_link_nonce, z_link_nonce) = loop {
+                let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
+                let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
+                if let (Some(s), Some(z)) = (s, z) {
+                    break (s, z);
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    SetLinkOp(LinkRes {
+                        nonce: s_link_nonce,
+                        side: Direction::Left,
+                        level: 0,
+                        linked: Some(s_identity),
+                    }),
+                )
+                .expect("failed to process s link reply");
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    SetLinkOp(LinkRes {
+                        nonce: z_link_nonce,
+                        side: Direction::Right,
+                        level: 0,
+                        linked: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process z link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(s_id),
+            "s's reply must land on this node's own left slot"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(z_id),
+            "z's reply must land on this node's own right slot"
         );
     }
 }
