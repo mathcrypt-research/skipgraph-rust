@@ -1,5 +1,5 @@
 use crate::core::model::search::Nonce;
-use crate::core::{IdSearchRes, MaxLevelRes, NeighborRes};
+use crate::core::{IdSearchRes, LinkRes, MaxLevelRes, NeighborRes};
 use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,8 @@ pub(super) enum Waiter {
     AsyncSearch(oneshot::Sender<IdSearchRes>),
     /// a pending `get_neighbor` call, resolved by a `RetNeighborOp`.
     Neighbor(oneshot::Sender<NeighborRes>),
+    /// a pending `send_link_request` call, resolved by a `SetLinkOp`.
+    Link(oneshot::Sender<LinkRes>),
 }
 
 /// RAII guard that unconditionally removes a nonce's waiter-map entry on drop — ties
