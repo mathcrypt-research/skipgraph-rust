@@ -1729,4 +1729,195 @@ mod tests {
             "z's reply must land on this node's own right slot"
         );
     }
+
+    /// The one-node-graph edge case, with `introducer.id() < u.id()` (the
+    /// search-right branch), where `introducer`'s own reply names `introducer`
+    /// itself as `s` (the existing `search_by_id` fallback, exercised unmodified).
+    /// `join_stage1_link_level0` needs no special-casing for this and completes exactly as it
+    /// would for a distinct `s`.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_one_node_graph_edge_case() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let s_identity = Identity::new(
+            random_identifier_less_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let introducer = s_identity.id();
+        let z_identity = random_identity();
+        let z_id = z_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let s_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let z_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let (search_mock, neighbor_mock, s_link_mock, z_link_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            s_link_nonce_cell.clone(),
+            z_link_nonce_cell.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "introducer.id() < u.id() must search Direction::Right"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, introducer, "neighbor query must go to s");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == introducer => {
+                            assert_eq!(
+                                req.side,
+                                Direction::Right,
+                                "s's side must be Direction::Right"
+                            );
+                            *s_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == z_id => {
+                            assert_eq!(
+                                req.side,
+                                Direction::Left,
+                                "z's side must be Direction::Left"
+                            );
+                            *z_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce = loop {
+                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: introducer,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce = loop {
+                if let Some(n) = *neighbor_nonce_cell.lock().expect("mutex poisoned") {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Right,
+                        neighbor: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let (s_link_nonce, z_link_nonce) = loop {
+                let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
+                let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
+                if let (Some(s), Some(z)) = (s, z) {
+                    break (s, z);
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SetLinkOp(LinkRes {
+                        nonce: s_link_nonce,
+                        side: Direction::Left,
+                        level: 0,
+                        linked: Some(s_identity),
+                    }),
+                )
+                .expect("failed to process s link reply");
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    SetLinkOp(LinkRes {
+                        nonce: z_link_nonce,
+                        side: Direction::Right,
+                        level: 0,
+                        linked: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process z link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(introducer),
+            "s's reply must land on this node's own left slot, even though s is the introducer"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(z_id),
+            "z's reply must land on this node's own right slot"
+        );
+    }
 }
