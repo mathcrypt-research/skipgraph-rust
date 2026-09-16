@@ -1,4 +1,4 @@
-use crate::core::Identifier;
+use crate::core::{Address, Identifier};
 use crate::network::mock::hub::NetworkHub;
 use crate::network::{Event, MessageProcessor, Network};
 use anyhow::{anyhow, Context};
@@ -17,16 +17,18 @@ struct InnerMockNetwork {
     hub: NetworkHub,
     processor: Option<MessageProcessor>,
     id: Identifier, // Identifier of the mock network
+    address: Address,
 }
 
 impl MockNetwork {
-    /// Creates a new instance of MockNetwork with the given NetworkHub.
-    pub fn new(id: Identifier, hub: NetworkHub) -> Self {
+    /// Creates a new instance of MockNetwork with the given identifier, hub, and address.
+    pub fn new(id: Identifier, hub: NetworkHub, address: Address) -> Self {
         MockNetwork {
             core: Arc::new(RwLock::new(InnerMockNetwork {
                 hub,
                 processor: None,
                 id,
+                address,
             })),
         }
     }
@@ -59,6 +61,11 @@ impl Clone for MockNetwork {
 }
 
 impl Network for MockNetwork {
+    /// Returns this mock network's own address.
+    fn address(&self) -> Address {
+        self.core.read().address
+    }
+
     /// Sends an event through the mock network by routing it through the NetworkHub.
     fn send_event(&self, target_id: Identifier, event: Event) -> anyhow::Result<()> {
         let core_guard = self.core.read();
