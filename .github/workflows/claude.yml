@@ -36,6 +36,12 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
+          # Without this, the action authenticates as the separately-installed Claude
+          # GitHub App, whose pull-request permission is fixed and not governed by this
+          # job's own `permissions:` block or by the repo's Actions approval setting.
+          # Forcing the job's own token here makes both of those actually apply.
+          github_token: ${{ github.token }}
+
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
@@ -55,10 +61,13 @@ jobs:
 
           # Add custom instructions for Claude to customize its behavior for your project
           custom_instructions: |
-            After reviewing the requested PR, submit a formal GitHub review verdict yourself:
-            run `gh pr review <number> --approve --body "..."` if you find no blocking issues,
-            or `gh pr review <number> --request-changes --body "..."` if you do. State the
-            verdict once, in that review body; do not duplicate it as a separate comment.
+            If, and only if, you were asked to review a pull request, submit a formal GitHub
+            review verdict yourself when you finish: run `gh pr review <number> --approve
+            --body "..."` if you find no blocking issues, or `gh pr review <number>
+            --request-changes --body "..."` if you do. State the verdict once, in that review
+            body; do not duplicate it as a separate comment. This does not apply to a plain
+            issue mention, or to a PR request that only asks for an implementation change
+            rather than a review.
           
           # Optional: Custom environment variables for Claude
           # claude_env: |
