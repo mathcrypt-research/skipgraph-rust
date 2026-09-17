@@ -3,8 +3,7 @@ use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use crate::core::model::search::Nonce;
 use crate::core::testutil::fixtures::{
-    join_all_with_timeout, join_with_timeout, random_membership_vector, random_sorted_identifiers,
-    span_fixture,
+    join_all_with_timeout, join_with_timeout, random_sorted_identifiers, span_fixture,
 };
 use crate::core::{
     Address, ArrayLookupTable, IdSearchReq, Identifier, LookupTable, MembershipVector,
@@ -12,7 +11,7 @@ use crate::core::{
 };
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Network;
-use crate::node::core::BaseCore;
+use crate::node::testutil::make_core;
 
 struct LocalSkipGraph {
     nodes: Vec<BaseNode>,
@@ -40,10 +39,9 @@ impl LocalSkipGraph {
         let mut lts: Vec<Box<dyn LookupTable>> = Vec::with_capacity(n);
 
         for &id in &identifiers {
-            let mem_vec = random_membership_vector();
             let lt: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new());
             let network = NetworkHub::new_mock_network(hub.clone(), id)?;
-            let core = Box::new(BaseCore::new(span_fixture(), id, mem_vec, lt.clone()));
+            let core = Box::new(make_core(id, lt.clone()));
             let node = BaseNode::new(span_fixture(), core, network.clone_box())?;
             nodes.push(node);
             lts.push(lt);
