@@ -17,7 +17,7 @@ use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{Instrument, Span};
+use tracing::Span;
 
 /// `BaseNode` is the network-aware orchestrator for a single skip-graph node.
 ///
@@ -47,7 +47,7 @@ impl BaseNode {
         net: Box<dyn Network>,
     ) -> anyhow::Result<Self> {
         let clone_net = net.clone();
-        let span = tracing::span!(parent: &parent_span, tracing::Level::TRACE, "base_node", id = ?core.id(), mem_vec = ?core.mem_vec());
+        let span = tracing::span!(parent: &parent_span, tracing::Level::DEBUG, "base_node", id = ?core.id(), mem_vec = ?core.mem_vec());
         let _enter = span.enter();
 
         let ctx = IrrevocableContext::new(&span, "base_node_context");
@@ -83,7 +83,7 @@ impl BaseNode {
     }
 
     pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
-        let span = tracing::trace_span!("search_by_id", target = ?req.target, level = ?req.level);
+        let span = tracing::trace_span!(parent: &self.span, "search_by_id", target = ?req.target, level = ?req.level);
         let _enter = span.enter();
 
         tracing::trace!("searching for target {:?}", req.target);
@@ -164,56 +164,47 @@ impl BaseNode {
     ///   seeded level.
     /// * **RECOVERABLE** — the reply channel is dropped before a reply arrives.
     /// * **RECOVERABLE** — `timeout` elapses before a reply arrives.
+    #[tracing::instrument(level = "trace", parent = &self.span, fields(introducer = ?introducer), skip(self, timeout))]
     pub(crate) async fn get_max_level(
         &self,
         introducer: Identifier,
         timeout: Duration,
     ) -> anyhow::Result<LookupTableLevel> {
-        let span = tracing::trace_span!("get_max_level", introducer = ?introducer);
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<MaxLevelRes>();
 
-        // Attach the span via `.instrument()` rather than holding an `enter()` guard
-        // across the `.await` below: the guard is `!Send` and would stay entered while
-        // the future is suspended, leaking the span onto whatever unrelated work the
-        // executor polls on this thread in the meantime.
-        async move {
-            let nonce = Nonce::random();
-            let (tx, rx) = oneshot::channel::<MaxLevelRes>();
-
-            {
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                request_id_map.insert(nonce, Waiter::MaxLevel(tx));
-            }
-            // cleans up the map entry on every exit path, including cancellation. Never read
-            // (its only job is running `Drop` at end of scope), hence the `_` prefix.
-            let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
-
-            if let Err(e) = self.net.send_event(
-                introducer,
-                GetMaxLevelOp(MaxLevelReq {
-                    nonce,
-                    origin: self.core.id(),
-                }),
-            ) {
-                return Err(anyhow!("failed to send get max level request: {}", e));
-            }
-            tracing::info!("sent get max level request, pending response");
-
-            match tokio::time::timeout(timeout, rx).await {
-                Ok(Ok(res)) => {
-                    tracing::info!("received max level response: {:?}", res.max_level);
-                    Ok(res.max_level)
-                }
-                Ok(Err(_)) => Err(anyhow!(
-                    "failed to receive network response for get max level: sender dropped"
-                )),
-                Err(_) => Err(anyhow!("timed out waiting for get max level response")),
-            }
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::MaxLevel(tx));
         }
-        .instrument(span)
-        .await
+        // cleans up the map entry on every exit path, including cancellation. Never read
+        // (its only job is running `Drop` at end of scope), hence the `_` prefix.
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        if let Err(e) = self.net.send_event(
+            introducer,
+            GetMaxLevelOp(MaxLevelReq {
+                nonce,
+                origin: self.core.id(),
+            }),
+        ) {
+            return Err(anyhow!("failed to send get max level request: {}", e));
+        }
+        tracing::info!("sent get max level request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => {
+                tracing::info!("received max level response: {:?}", res.max_level);
+                Ok(res.max_level)
+            }
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive network response for get max level: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get max level response")),
+        }
     }
 }
 
@@ -223,14 +214,15 @@ impl EventProcessorCore for BaseNode {
 
         match event {
             SearchByIdRequest(req) => {
-                let span = tracing::trace_span!(
+                let request_span = tracing::trace_span!(
+                    parent: &self.span,
                     "search_by_id_request",
                     origin = ?origin_id,
                     target = ?req.target,
                     direction = ?req.direction,
                     level = ?req.level
                 );
-                let _enter = span.enter();
+                let _request_enter = request_span.enter();
                 tracing::trace!("received request");
 
                 let res = self
@@ -239,6 +231,7 @@ impl EventProcessorCore for BaseNode {
                     .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
 
                 let span = tracing::trace_span!(
+                    parent: &request_span,
                     "terminating",
                     result = ?res.result,
                     termination_level = ?res.termination_level
@@ -273,6 +266,7 @@ impl EventProcessorCore for BaseNode {
             }
             SearchByIdResponse(res) => {
                 let span = tracing::trace_span!(
+                    parent: &self.span,
                     "search_by_id_response",
                     origin = ?origin_id,
                     target = ?res.target,
