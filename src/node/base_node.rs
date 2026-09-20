@@ -175,9 +175,10 @@ impl BaseNode {
     }
 
     /// Sends the request to `dest` and waits for the terminal node's reply, skipping this
-    /// node's own local search. `dest` must already satisfy `direction`'s relation to
-    /// `target`. The core's self-fallback ("no better candidate, terminate here") is only
-    /// sound once that holds at the first hop, and its relay chain preserves it after.
+    /// node's own local search. `dest` must not be past `target` in `direction`, so
+    /// `dest <= target` for `Right` and `dest >= target` for `Left`. A node with no better
+    /// neighbor answers with its own identifier, which is valid only under that condition.
+    /// Each relay hop preserves it, so the caller guarantees it for the first hop only.
     ///
     /// # Returns
     ///
