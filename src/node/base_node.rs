@@ -557,7 +557,7 @@ mod tests {
     /// live in the shared `request_id_map` simultaneously, then answers both. Guards three
     /// regressions.
     ///
-    /// 1. The map's `Mutex` held across the blocking `recv` or across the `.await`, which
+    /// 1. The map's `Mutex` held across the `.await`, which
     ///    deadlocks the moment two waiters coexist.
     /// 2. Reply routing that resolves whichever waiter it finds instead of matching on the
     ///    nonce.
@@ -628,8 +628,8 @@ mod tests {
                 .search_by_id(search_req, Duration::from_secs(30))
                 .await
         });
-        // deliberately generous: this budget is spent waiting for the blocking search
-        // thread to be scheduled, so a tight bound here fails under load. timeout
+        // deliberately generous: this budget is spent waiting for the spawned search task
+        // to be scheduled, so a tight bound here fails under load. timeout
         // behaviour is covered by `test_get_max_level_times_out_and_cleans_up`, and the
         // outer bound below is what fails this test if anything hangs.
         let max_level_fut = node.get_max_level(introducer, Duration::from_secs(30));
