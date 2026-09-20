@@ -13,6 +13,7 @@ use crate::core::{
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Network;
 use crate::node::testutil::make_core;
+use std::time::Duration;
 
 struct LocalSkipGraph {
     nodes: Vec<BaseNode>,
@@ -179,8 +180,9 @@ fn test_skip_graph_search_by_id() {
             level: LOOKUP_TABLE_LEVELS - 1,
             direction: Direction::Right,
         };
-        let result = origin_node
-            .search_by_id(id_search_req)
+        let result = tokio::runtime::Runtime::new()
+            .expect("failed to build runtime")
+            .block_on(origin_node.search_by_id(id_search_req, Duration::from_secs(5)))
             .expect("failed to search by id");
         assert_eq!(result.result, target_id);
     });
@@ -206,8 +208,9 @@ fn test_skip_graph_search_by_id_concurrent() {
                 level: LOOKUP_TABLE_LEVELS - 1,
                 direction: Direction::Right,
             };
-            let result = origin_node
-                .search_by_id(id_search_req)
+            let result = tokio::runtime::Runtime::new()
+                .expect("failed to build runtime")
+                .block_on(origin_node.search_by_id(id_search_req, Duration::from_secs(5)))
                 .expect("failed to search by id");
             assert_eq!(result.result, target_id);
         });
