@@ -1,9 +1,12 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    Direction, IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel,
-    MaxLevelReq, MaxLevelRes, MembershipVector,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext,
+    LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq, NeighborRes,
 };
-use crate::network::Event::{GetMaxLevelOp, RetMaxLevelOp, SearchByIdRequest, SearchByIdResponse};
+use crate::network::Event::{
+    GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
+    SearchByIdResponse,
+};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
 use crate::network::{Event, EventProcessorCore, Network};
@@ -221,125 +224,287 @@ impl BaseNode {
             .map_err(|_| anyhow!("timed out waiting for search by id response"))?
             .map_err(|_| anyhow!("failed to receive search by id response: sender dropped"))
     }
+
+    /// Asks `from` for its current neighbor entry on `direction` at `level`.
+    ///
+    /// # Args
+    ///
+    /// * `from`, the node to query.
+    /// * `direction`, which of `from`'s own slots to query.
+    /// * `level`, which lookup-table level to query.
+    /// * `timeout`, how long to wait for `from`'s reply before giving up.
+    ///
+    /// # Returns
+    ///
+    /// `from`'s current neighbor on `direction` at `level`, or `None` if `from`
+    /// currently believes it has none there.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(from = ?from, direction = ?direction, level = ?level),
+        skip(self, timeout)
+    )]
+    pub(crate) async fn get_neighbor(
+        &self,
+        from: Identifier,
+        direction: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Identity>> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<NeighborRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::Neighbor(tx));
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                from,
+                GetNeighborOp(NeighborReq {
+                    nonce,
+                    origin: self.core.id(),
+                    level,
+                    direction,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send get neighbor request: {}", e))?;
+        tracing::info!("sent get neighbor request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => Ok(res.neighbor),
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get neighbor response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get neighbor response")),
+        }
+    }
+
+    /// Removes and returns the `nonce`-keyed waiter, but only when the map's current
+    /// entry there matches `is_expected_variant`; a present but wrong-typed entry is
+    /// left untouched rather than destroyed, since it may belong to a different
+    /// in-flight request. Logs why, at warn level, whenever it returns `None`.
+    ///
+    /// # Args
+    ///
+    /// * `nonce` — the correlation id to look up.
+    /// * `expected` — the variant name this caller expects, named only in the warning
+    ///   logged on a mismatch.
+    /// * `is_expected_variant` — tests the map's current entry without consuming it.
+    fn take_waiter(
+        &self,
+        nonce: Nonce,
+        expected: &str,
+        is_expected_variant: impl Fn(&Waiter) -> bool,
+    ) -> Option<Waiter> {
+        let mut request_id_map = self
+            .request_id_map
+            .lock()
+            .expect("mutex was poisoned by a previous panic");
+        match request_id_map.get(&nonce) {
+            Some(w) if is_expected_variant(w) => request_id_map.remove(&nonce),
+            Some(x) => {
+                tracing::warn!(
+                    "invalid waiter in the map, expected Waiter::{}, got {:?}",
+                    expected,
+                    x
+                );
+                None
+            }
+            None => {
+                tracing::warn!("no waiter exists in the map for that request_id");
+                None
+            }
+        }
+    }
+
+    /// Handles an inbound `SearchByIdRequest`: performs the local search and either
+    /// answers directly, when this node is the result, or relays the request to the
+    /// next hop.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, target = ?req.target, direction = ?req.direction, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_search_by_id_request(&self, req: IdSearchReq) -> anyhow::Result<()> {
+        tracing::trace!("received request");
+
+        let res = self
+            .core
+            .search_by_id(req)
+            .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
+
+        let span = tracing::trace_span!(
+            parent: &tracing::Span::current(),
+            "terminating",
+            result = ?res.result,
+            termination_level = ?res.termination_level
+        );
+        let _enter = span.enter();
+
+        if res.result == self.core.id() {
+            self.net
+                .send_event(req.origin, SearchByIdResponse(res))
+                .map_err(|e| anyhow!("failed to send response event for search by id: {}", e))?;
+            tracing::info!("found self in search by id, terminated the search result");
+            return Ok(());
+        }
+
+        let relay_request = SearchByIdRequest(IdSearchReq {
+            level: res.termination_level,
+            ..req
+        });
+
+        self.net
+            .send_event(res.result, relay_request)
+            .map_err(|e| {
+                anyhow!(
+                    "failed to send relay response event for search by id: {}",
+                    e
+                )
+            })?;
+        tracing::info!("relayed search by id request to the next node");
+        Ok(())
+    }
+
+    /// Handles an inbound `SearchByIdResponse`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, target = ?res.target, result = ?res.result, termination_level = ?res.termination_level),
+        skip(self, res)
+    )]
+    fn handle_search_by_id_response(&self, res: IdSearchRes) -> anyhow::Result<()> {
+        if let Some(Waiter::AsyncSearch(tx)) = self.take_waiter(res.nonce, "AsyncSearch", |w| {
+            matches!(w, Waiter::AsyncSearch(_))
+        }) {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetMaxLevelOp`: reads the local lookup table and replies
+    /// with `RetMaxLevelOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce),
+        skip(self, req)
+    )]
+    fn handle_get_max_level_request(&self, req: MaxLevelReq) -> anyhow::Result<()> {
+        let max_level = self
+            .core
+            .max_level()
+            .map_err(|e| anyhow!("failed to read local max level: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetMaxLevelOp(MaxLevelRes {
+                    nonce: req.nonce,
+                    max_level,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send max level response: {}", e))?;
+        tracing::info!("answered get max level request with {:?}", max_level);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetMaxLevelOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, max_level = ?res.max_level),
+        skip(self, res)
+    )]
+    fn handle_ret_max_level_response(&self, res: MaxLevelRes) -> anyhow::Result<()> {
+        if let Some(Waiter::MaxLevel(tx)) =
+            self.take_waiter(res.nonce, "MaxLevel", |w| matches!(w, Waiter::MaxLevel(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetNeighborOp`: reads the local lookup table and replies
+    /// with `RetNeighborOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, level = ?req.level, direction = ?req.direction),
+        skip(self, req)
+    )]
+    fn handle_get_neighbor_request(&self, req: NeighborReq) -> anyhow::Result<()> {
+        let neighbor = self
+            .core
+            .neighbor_entry(req.level, req.direction)
+            .map_err(|e| anyhow!("failed to read local neighbor entry: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetNeighborOp(NeighborRes {
+                    nonce: req.nonce,
+                    level: req.level,
+                    direction: req.direction,
+                    neighbor,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send neighbor response: {}", e))?;
+        tracing::info!("answered get neighbor request with {:?}", neighbor);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetNeighborOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, level = ?res.level, direction = ?res.direction, neighbor = ?res.neighbor),
+        skip(self, res)
+    )]
+    fn handle_ret_neighbor_response(&self, res: NeighborRes) -> anyhow::Result<()> {
+        if let Some(Waiter::Neighbor(tx)) =
+            self.take_waiter(res.nonce, "Neighbor", |w| matches!(w, Waiter::Neighbor(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EventProcessorCore for BaseNode {
+    #[tracing::instrument(
+        level = "trace",
+        parent = &self.span,
+        fields(origin = ?origin_id),
+        skip(self, event)
+    )]
     fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let _enter = self.span.enter();
-
         match event {
-            SearchByIdRequest(req) => {
-                let request_span = tracing::trace_span!(
-                    parent: &self.span,
-                    "search_by_id_request",
-                    origin = ?origin_id,
-                    target = ?req.target,
-                    direction = ?req.direction,
-                    level = ?req.level
-                );
-                let _request_enter = request_span.enter();
-                tracing::trace!("received request");
-
-                let res = self
-                    .core
-                    .search_by_id(req)
-                    .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
-
-                let span = tracing::trace_span!(
-                    parent: &request_span,
-                    "terminating",
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                if res.result == self.core.id() {
-                    self.net
-                        .send_event(req.origin, SearchByIdResponse(res))
-                        .map_err(|e| {
-                            anyhow!("failed to send response event for search by id: {}", e)
-                        })?;
-                    tracing::info!("found self in search by id, terminated the search result");
-                    return Ok(());
-                }
-
-                let relay_request = SearchByIdRequest(IdSearchReq {
-                    level: res.termination_level,
-                    ..req
-                });
-
-                self.net
-                    .send_event(res.result, relay_request)
-                    .map_err(|e| {
-                        anyhow!(
-                            "failed to send relay response event for search by id: {}",
-                            e
-                        )
-                    })?;
-                tracing::info!("relayed search by id request to the next node");
-                Ok(())
-            }
-            SearchByIdResponse(res) => {
-                let span = tracing::trace_span!(
-                    parent: &self.span,
-                    "search_by_id_response",
-                    origin = ?origin_id,
-                    target = ?res.target,
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if let Some(Waiter::AsyncSearch(_)) = request_id_map.get(&res.nonce) {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
-
-                if let Some(Waiter::AsyncSearch(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::MaxLevel` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
-                }
-
-                Ok(())
-            }
-            RetMaxLevelOp(res) => {
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::MaxLevel(_)))
-                {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
-
-                if let Some(Waiter::MaxLevel(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::AsyncSearch` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
-                }
-
-                Ok(())
-            }
+            SearchByIdRequest(req) => self.handle_search_by_id_request(req),
+            SearchByIdResponse(res) => self.handle_search_by_id_response(res),
+            GetMaxLevelOp(req) => self.handle_get_max_level_request(req),
+            RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
+            GetNeighborOp(req) => self.handle_get_neighbor_request(req),
+            RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
@@ -385,7 +550,7 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than,
+        random_address, random_identifier, random_identifier_greater_than, random_identity,
         random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
@@ -551,6 +716,270 @@ mod tests {
         );
 
         assert_eq!(res.expect("should resolve").result, expected_anchor);
+    }
+
+    /// A single in-flight `get_neighbor` call resolves to the neighbor entry carried
+    /// by its correlated `RetNeighborOp` reply, and the outbound request carries the
+    /// caller-supplied `direction` and `level`.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let expected_neighbor = random_identity();
+        let query_level: LookupTableLevel = 3;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            assert_eq!(req.direction, Direction::Right);
+                            assert_eq!(req.level, query_level);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: query_level,
+                                direction: Direction::Right,
+                                neighbor: Some(expected_neighbor),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(
+            neighbor_result.expect("should resolve").map(|n| n.id()),
+            Some(expected_neighbor.id())
+        );
+    }
+
+    /// A `get_neighbor` call whose correlated `RetNeighborOp` reply carries no neighbor
+    /// resolves to `Ok(None)`, the "queried node has none there" case `Option<Identity>`
+    /// exists to carry.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves_to_none() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let query_level: LookupTableLevel = 2;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: query_level,
+                                direction: Direction::Right,
+                                neighbor: None,
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(neighbor_result.expect("should resolve"), None);
+    }
+
+    /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
+    /// lookup table and replying with `RetMaxLevelOp`, the responder side of the round
+    /// trip `get_max_level` drives from the requester side.
+    #[tokio::test]
+    async fn test_process_incoming_event_answers_get_max_level_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_level: LookupTableLevel = 4;
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), expected_level, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetMaxLevelOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.max_level, expected_level);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetMaxLevelOp(MaxLevelReq {
+                nonce: Nonce::random(),
+                origin,
+            }),
+        )
+        .expect("failed to answer get max level request");
+    }
+
+    /// `process_incoming_event` answers a `GetNeighborOp` request by reading the local
+    /// lookup table and replying with `RetNeighborOp`, the responder side of the round
+    /// trip `get_neighbor` drives from the requester side.
+    #[tokio::test]
+    async fn test_process_incoming_event_answers_get_neighbor_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_neighbor = random_identity();
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(expected_neighbor, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetNeighborOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.direction, Direction::Right);
+                    assert_eq!(res.neighbor.map(|n| n.id()), Some(expected_neighbor.id()));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetNeighborOp(NeighborReq {
+                nonce: Nonce::random(),
+                origin,
+                level: 0,
+                direction: Direction::Right,
+            }),
+        )
+        .expect("failed to answer get neighbor request");
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be

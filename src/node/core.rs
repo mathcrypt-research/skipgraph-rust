@@ -52,6 +52,28 @@ pub trait Core: Send + Sync {
     /// peer sent.
     fn max_level(&self) -> anyhow::Result<LookupTableLevel>;
 
+    /// Returns this node's own current neighbor entry at `(level, direction)`.
+    ///
+    /// # Args
+    ///
+    /// * `level` - the lookup-table level to read.
+    /// * `direction` - which of this node's own slots to read.
+    ///
+    /// # Returns
+    ///
+    /// The neighbor at `(level, direction)`, or `None` if that slot is unpopulated.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL** — propagated from a failed read of the local
+    /// lookup table: a broken local invariant, not evidence of anything a
+    /// peer sent.
+    fn neighbor_entry(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+    ) -> anyhow::Result<Option<Identity>>;
+
     /// Reports whether this node's membership vector shares a common prefix
     /// of at least `level` bits with `candidate`'s.
     ///
@@ -244,6 +266,14 @@ impl Core for BaseCore {
 
     fn max_level(&self) -> anyhow::Result<LookupTableLevel> {
         Ok(self.lt.max_populated_level().unwrap_or(0))
+    }
+
+    fn neighbor_entry(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+    ) -> anyhow::Result<Option<Identity>> {
+        self.lt.get_entry(level, direction)
     }
 
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool {
