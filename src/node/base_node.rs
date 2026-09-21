@@ -288,6 +288,206 @@ impl BaseNode {
             Err(_) => Err(anyhow!("timed out waiting for get neighbor response")),
         }
     }
+
+    /// Removes and returns the `nonce`-keyed waiter, but only when the map's current
+    /// entry there matches `is_expected_variant`; a present but wrong-typed entry is
+    /// left untouched rather than destroyed, since it may belong to a different
+    /// in-flight request. Logs why, at warn level, whenever it returns `None`.
+    ///
+    /// # Args
+    ///
+    /// * `nonce` — the correlation id to look up.
+    /// * `expected` — the variant name this caller expects, named only in the warning
+    ///   logged on a mismatch.
+    /// * `is_expected_variant` — tests the map's current entry without consuming it.
+    fn take_waiter(
+        &self,
+        nonce: Nonce,
+        expected: &str,
+        is_expected_variant: impl Fn(&Waiter) -> bool,
+    ) -> Option<Waiter> {
+        let mut request_id_map = self
+            .request_id_map
+            .lock()
+            .expect("mutex was poisoned by a previous panic");
+        match request_id_map.get(&nonce) {
+            Some(w) if is_expected_variant(w) => request_id_map.remove(&nonce),
+            Some(x) => {
+                tracing::warn!(
+                    "invalid waiter in the map, expected Waiter::{}, got {:?}",
+                    expected,
+                    x
+                );
+                None
+            }
+            None => {
+                tracing::warn!("no waiter exists in the map for that request_id");
+                None
+            }
+        }
+    }
+
+    /// Handles an inbound `SearchByIdRequest`: performs the local search and either
+    /// answers directly, when this node is the result, or relays the request to the
+    /// next hop.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, target = ?req.target, direction = ?req.direction, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_search_by_id_request(&self, req: IdSearchReq) -> anyhow::Result<()> {
+        tracing::trace!("received request");
+
+        let res = self
+            .core
+            .search_by_id(req)
+            .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
+
+        let span = tracing::trace_span!(
+            parent: &tracing::Span::current(),
+            "terminating",
+            result = ?res.result,
+            termination_level = ?res.termination_level
+        );
+        let _enter = span.enter();
+
+        if res.result == self.core.id() {
+            self.net
+                .send_event(req.origin, SearchByIdResponse(res))
+                .map_err(|e| anyhow!("failed to send response event for search by id: {}", e))?;
+            tracing::info!("found self in search by id, terminated the search result");
+            return Ok(());
+        }
+
+        let relay_request = SearchByIdRequest(IdSearchReq {
+            level: res.termination_level,
+            ..req
+        });
+
+        self.net
+            .send_event(res.result, relay_request)
+            .map_err(|e| {
+                anyhow!(
+                    "failed to send relay response event for search by id: {}",
+                    e
+                )
+            })?;
+        tracing::info!("relayed search by id request to the next node");
+        Ok(())
+    }
+
+    /// Handles an inbound `SearchByIdResponse`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, target = ?res.target, result = ?res.result, termination_level = ?res.termination_level),
+        skip(self, res)
+    )]
+    fn handle_search_by_id_response(&self, res: IdSearchRes) -> anyhow::Result<()> {
+        if let Some(Waiter::AsyncSearch(tx)) = self.take_waiter(res.nonce, "AsyncSearch", |w| {
+            matches!(w, Waiter::AsyncSearch(_))
+        }) {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetMaxLevelOp`: reads the local lookup table and replies
+    /// with `RetMaxLevelOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce),
+        skip(self, req)
+    )]
+    fn handle_get_max_level_request(&self, req: MaxLevelReq) -> anyhow::Result<()> {
+        let max_level = self
+            .core
+            .max_level()
+            .map_err(|e| anyhow!("failed to read local max level: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetMaxLevelOp(MaxLevelRes {
+                    nonce: req.nonce,
+                    max_level,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send max level response: {}", e))?;
+        tracing::info!("answered get max level request with {:?}", max_level);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetMaxLevelOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, max_level = ?res.max_level),
+        skip(self, res)
+    )]
+    fn handle_ret_max_level_response(&self, res: MaxLevelRes) -> anyhow::Result<()> {
+        if let Some(Waiter::MaxLevel(tx)) =
+            self.take_waiter(res.nonce, "MaxLevel", |w| matches!(w, Waiter::MaxLevel(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetNeighborOp`: reads the local lookup table and replies
+    /// with `RetNeighborOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, level = ?req.level, direction = ?req.direction),
+        skip(self, req)
+    )]
+    fn handle_get_neighbor_request(&self, req: NeighborReq) -> anyhow::Result<()> {
+        let neighbor = self
+            .core
+            .neighbor_entry(req.level, req.direction)
+            .map_err(|e| anyhow!("failed to read local neighbor entry: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetNeighborOp(NeighborRes {
+                    nonce: req.nonce,
+                    level: req.level,
+                    direction: req.direction,
+                    neighbor,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send neighbor response: {}", e))?;
+        tracing::info!("answered get neighbor request with {:?}", neighbor);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetNeighborOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, level = ?res.level, direction = ?res.direction, neighbor = ?res.neighbor),
+        skip(self, res)
+    )]
+    fn handle_ret_neighbor_response(&self, res: NeighborRes) -> anyhow::Result<()> {
+        if let Some(Waiter::Neighbor(tx)) =
+            self.take_waiter(res.nonce, "Neighbor", |w| matches!(w, Waiter::Neighbor(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -299,234 +499,12 @@ impl EventProcessorCore for BaseNode {
     )]
     fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
         match event {
-            SearchByIdRequest(req) => {
-                let request_span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "search_by_id_request",
-                    nonce = ?req.nonce,
-                    target = ?req.target,
-                    direction = ?req.direction,
-                    level = ?req.level
-                );
-                let _request_enter = request_span.enter();
-                tracing::trace!("received request");
-
-                let res = self
-                    .core
-                    .search_by_id(req)
-                    .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
-
-                let span = tracing::trace_span!(
-                    parent: &request_span,
-                    "terminating",
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                if res.result == self.core.id() {
-                    self.net
-                        .send_event(req.origin, SearchByIdResponse(res))
-                        .map_err(|e| {
-                            anyhow!("failed to send response event for search by id: {}", e)
-                        })?;
-                    tracing::info!("found self in search by id, terminated the search result");
-                    return Ok(());
-                }
-
-                let relay_request = SearchByIdRequest(IdSearchReq {
-                    level: res.termination_level,
-                    ..req
-                });
-
-                self.net
-                    .send_event(res.result, relay_request)
-                    .map_err(|e| {
-                        anyhow!(
-                            "failed to send relay response event for search by id: {}",
-                            e
-                        )
-                    })?;
-                tracing::info!("relayed search by id request to the next node");
-                Ok(())
-            }
-            SearchByIdResponse(res) => {
-                let span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "search_by_id_response",
-                    nonce = ?res.nonce,
-                    target = ?res.target,
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                let waiter: Option<Waiter>;
-                {
-                    let mut request_id_map = self
-                        .request_id_map
-                        .lock()
-                        .expect("mutex was poisoned by a previous panic");
-                    waiter = match request_id_map.get(&res.nonce) {
-                        Some(Waiter::AsyncSearch(_)) => request_id_map.remove(&res.nonce),
-                        Some(x) => {
-                            tracing::warn!(
-                                "invalid waiter in the map, expected Waiter::AsyncSearch, got {:?}",
-                                x
-                            );
-                            None
-                        }
-                        None => {
-                            tracing::warn!("no waiter exists in the map for that request_id");
-                            None
-                        }
-                    };
-                }
-
-                if let Some(Waiter::AsyncSearch(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                }
-
-                Ok(())
-            }
-            GetMaxLevelOp(req) => {
-                let span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "get_max_level_op",
-                    nonce = ?req.nonce
-                );
-                let _enter = span.enter();
-
-                let max_level = self
-                    .core
-                    .max_level()
-                    .map_err(|e| anyhow!("failed to read local max level: {}", e))?;
-
-                self.net
-                    .send_event(
-                        req.origin,
-                        RetMaxLevelOp(MaxLevelRes {
-                            nonce: req.nonce,
-                            max_level,
-                        }),
-                    )
-                    .map_err(|e| anyhow!("failed to send max level response: {}", e))?;
-                tracing::info!("answered get max level request with {:?}", max_level);
-
-                Ok(())
-            }
-            RetMaxLevelOp(res) => {
-                let span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "ret_max_level_op",
-                    nonce = ?res.nonce,
-                    max_level = ?res.max_level
-                );
-                let _enter = span.enter();
-
-                let waiter: Option<Waiter>;
-                {
-                    let mut request_id_map = self
-                        .request_id_map
-                        .lock()
-                        .expect("mutex was poisoned by a previous panic");
-                    waiter = match request_id_map.get(&res.nonce) {
-                        Some(Waiter::MaxLevel(_)) => request_id_map.remove(&res.nonce),
-                        Some(x) => {
-                            tracing::warn!(
-                                "invalid waiter in the map, expected Waiter::MaxLevel, got {:?}",
-                                x
-                            );
-                            None
-                        }
-                        None => {
-                            tracing::warn!("no waiter exists in the map for that request_id");
-                            None
-                        }
-                    };
-                }
-
-                if let Some(Waiter::MaxLevel(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                }
-
-                Ok(())
-            }
-            GetNeighborOp(req) => {
-                let span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "get_neighbor_op",
-                    nonce = ?req.nonce,
-                    level = ?req.level,
-                    direction = ?req.direction
-                );
-                let _enter = span.enter();
-
-                let neighbor = self
-                    .core
-                    .neighbor_entry(req.level, req.direction)
-                    .map_err(|e| anyhow!("failed to read local neighbor entry: {}", e))?;
-
-                self.net
-                    .send_event(
-                        req.origin,
-                        RetNeighborOp(NeighborRes {
-                            nonce: req.nonce,
-                            level: req.level,
-                            direction: req.direction,
-                            neighbor,
-                        }),
-                    )
-                    .map_err(|e| anyhow!("failed to send neighbor response: {}", e))?;
-                tracing::info!("answered get neighbor request with {:?}", neighbor);
-
-                Ok(())
-            }
-            RetNeighborOp(res) => {
-                let span = tracing::trace_span!(
-                    parent: &tracing::Span::current(),
-                    "ret_neighbor_op",
-                    nonce = ?res.nonce,
-                    level = ?res.level,
-                    direction = ?res.direction,
-                    neighbor = ?res.neighbor
-                );
-                let _enter = span.enter();
-
-                let waiter: Option<Waiter>;
-                {
-                    let mut request_id_map = self
-                        .request_id_map
-                        .lock()
-                        .expect("mutex was poisoned by a previous panic");
-                    waiter = match request_id_map.get(&res.nonce) {
-                        Some(Waiter::Neighbor(_)) => request_id_map.remove(&res.nonce),
-                        Some(x) => {
-                            tracing::warn!(
-                                "invalid waiter in the map, expected Waiter::Neighbor, got {:?}",
-                                x
-                            );
-                            None
-                        }
-                        None => {
-                            tracing::warn!("no waiter exists in the map for that request_id");
-                            None
-                        }
-                    };
-                }
-
-                if let Some(Waiter::Neighbor(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                }
-
-                Ok(())
-            }
+            SearchByIdRequest(req) => self.handle_search_by_id_request(req),
+            SearchByIdResponse(res) => self.handle_search_by_id_response(res),
+            GetMaxLevelOp(req) => self.handle_get_max_level_request(req),
+            RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
+            GetNeighborOp(req) => self.handle_get_neighbor_request(req),
+            RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
