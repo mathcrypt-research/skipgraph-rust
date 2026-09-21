@@ -248,7 +248,7 @@ impl BaseNode {
         fields(from = ?from, direction = ?direction),
         skip(self, timeout)
     )]
-    async fn get_neighbor(
+    pub(crate) async fn get_neighbor(
         &self,
         from: Identifier,
         direction: Direction,
@@ -390,6 +390,32 @@ impl EventProcessorCore for BaseNode {
 
                 Ok(())
             }
+            GetMaxLevelOp(req) => {
+                let span = tracing::trace_span!(
+                    parent: &tracing::Span::current(),
+                    "get_max_level_op",
+                    nonce = ?req.nonce
+                );
+                let _enter = span.enter();
+
+                let max_level = self
+                    .core
+                    .max_level()
+                    .map_err(|e| anyhow!("failed to read local max level: {}", e))?;
+
+                self.net
+                    .send_event(
+                        req.origin,
+                        RetMaxLevelOp(MaxLevelRes {
+                            nonce: req.nonce,
+                            max_level,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("failed to send max level response: {}", e))?;
+                tracing::info!("answered get max level request with {:?}", max_level);
+
+                Ok(())
+            }
             RetMaxLevelOp(res) => {
                 let span = tracing::trace_span!(
                     parent: &tracing::Span::current(),
@@ -426,6 +452,36 @@ impl EventProcessorCore for BaseNode {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
                 }
+
+                Ok(())
+            }
+            GetNeighborOp(req) => {
+                let span = tracing::trace_span!(
+                    parent: &tracing::Span::current(),
+                    "get_neighbor_op",
+                    nonce = ?req.nonce,
+                    level = ?req.level,
+                    direction = ?req.direction
+                );
+                let _enter = span.enter();
+
+                let neighbor = self
+                    .core
+                    .neighbor_entry(req.level, req.direction)
+                    .map_err(|e| anyhow!("failed to read local neighbor entry: {}", e))?;
+
+                self.net
+                    .send_event(
+                        req.origin,
+                        RetNeighborOp(NeighborRes {
+                            nonce: req.nonce,
+                            level: req.level,
+                            direction: req.direction,
+                            neighbor,
+                        }),
+                    )
+                    .map_err(|e| anyhow!("failed to send neighbor response: {}", e))?;
+                tracing::info!("answered get neighbor request with {:?}", neighbor);
 
                 Ok(())
             }
@@ -760,6 +816,106 @@ mod tests {
             neighbor_result.expect("should resolve").map(|n| n.id()),
             Some(expected_neighbor.id())
         );
+    }
+
+    /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
+    /// lookup table and replying with `RetMaxLevelOp`, the responder side of the round
+    /// trip `get_max_level` drives from the requester side.
+    #[tokio::test]
+    async fn test_process_incoming_event_answers_get_max_level_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_level: LookupTableLevel = 4;
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), expected_level, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetMaxLevelOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.max_level, expected_level);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetMaxLevelOp(MaxLevelReq {
+                nonce: Nonce::random(),
+                origin,
+            }),
+        )
+        .expect("failed to answer get max level request");
+    }
+
+    /// `process_incoming_event` answers a `GetNeighborOp` request by reading the local
+    /// lookup table and replying with `RetNeighborOp`, the responder side of the round
+    /// trip `get_neighbor` drives from the requester side.
+    #[tokio::test]
+    async fn test_process_incoming_event_answers_get_neighbor_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_neighbor = random_identity();
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(expected_neighbor, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetNeighborOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.direction, Direction::Right);
+                    assert_eq!(res.neighbor.map(|n| n.id()), Some(expected_neighbor.id()));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetNeighborOp(NeighborReq {
+                nonce: Nonce::random(),
+                origin,
+                level: 0,
+                direction: Direction::Right,
+            }),
+        )
+        .expect("failed to answer get neighbor request");
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
