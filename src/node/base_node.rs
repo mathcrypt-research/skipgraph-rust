@@ -290,15 +290,19 @@ impl BaseNode {
 }
 
 impl EventProcessorCore for BaseNode {
+    #[tracing::instrument(
+        level = "trace",
+        parent = &self.span,
+        fields(origin = ?origin_id),
+        skip(self, event)
+    )]
     fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let _enter = self.span.enter();
-
         match event {
             SearchByIdRequest(req) => {
                 let request_span = tracing::trace_span!(
-                    parent: &self.span,
+                    parent: &tracing::Span::current(),
                     "search_by_id_request",
-                    origin = ?origin_id,
+                    nonce = ?req.nonce,
                     target = ?req.target,
                     direction = ?req.direction,
                     level = ?req.level
@@ -347,9 +351,9 @@ impl EventProcessorCore for BaseNode {
             }
             SearchByIdResponse(res) => {
                 let span = tracing::trace_span!(
-                    parent: &self.span,
+                    parent: &tracing::Span::current(),
                     "search_by_id_response",
-                    origin = ?origin_id,
+                    nonce = ?res.nonce,
                     target = ?res.target,
                     result = ?res.result,
                     termination_level = ?res.termination_level
@@ -387,6 +391,14 @@ impl EventProcessorCore for BaseNode {
                 Ok(())
             }
             RetMaxLevelOp(res) => {
+                let span = tracing::trace_span!(
+                    parent: &tracing::Span::current(),
+                    "ret_max_level_op",
+                    nonce = ?res.nonce,
+                    max_level = ?res.max_level
+                );
+                let _enter = span.enter();
+
                 let waiter: Option<Waiter>;
                 {
                     let mut request_id_map = self
@@ -419,9 +431,9 @@ impl EventProcessorCore for BaseNode {
             }
             RetNeighborOp(res) => {
                 let span = tracing::trace_span!(
-                    parent: &self.span,
+                    parent: &tracing::Span::current(),
                     "ret_neighbor_op",
-                    origin = ?origin_id,
+                    nonce = ?res.nonce,
                     level = ?res.level,
                     direction = ?res.direction,
                     neighbor = ?res.neighbor
