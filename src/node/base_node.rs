@@ -225,18 +225,18 @@ impl BaseNode {
             .map_err(|_| anyhow!("failed to receive search by id response: sender dropped"))
     }
 
-    /// Asks `from` for its current neighbor entry on `direction` at level 0, part of
-    /// stage 1 of the join protocol.
+    /// Asks `from` for its current neighbor entry on `direction` at `level`.
     ///
     /// # Args
     ///
     /// * `from`, the node to query.
     /// * `direction`, which of `from`'s own slots to query.
+    /// * `level`, which lookup-table level to query.
     /// * `timeout`, how long to wait for `from`'s reply before giving up.
     ///
     /// # Returns
     ///
-    /// `from`'s current neighbor on `direction` at level 0, or `None` if `from`
+    /// `from`'s current neighbor on `direction` at `level`, or `None` if `from`
     /// currently believes it has none there.
     ///
     /// # Errors
@@ -245,13 +245,14 @@ impl BaseNode {
     ///   dropped, or `timeout` elapses before a reply arrives.
     #[tracing::instrument(
         parent = &self.span,
-        fields(from = ?from, direction = ?direction),
+        fields(from = ?from, direction = ?direction, level = ?level),
         skip(self, timeout)
     )]
     pub(crate) async fn get_neighbor(
         &self,
         from: Identifier,
         direction: Direction,
+        level: LookupTableLevel,
         timeout: Duration,
     ) -> anyhow::Result<Option<Identity>> {
         let nonce = Nonce::random();
@@ -272,7 +273,7 @@ impl BaseNode {
                 GetNeighborOp(NeighborReq {
                     nonce,
                     origin: self.core.id(),
-                    level: 0,
+                    level,
                     direction,
                 }),
             )
@@ -741,7 +742,7 @@ mod tests {
 
     /// A single in-flight `get_neighbor` call resolves to the neighbor entry carried
     /// by its correlated `RetNeighborOp` reply, and the outbound request carries the
-    /// caller-supplied `direction`.
+    /// caller-supplied `direction` and `level`.
     #[tokio::test]
     async fn test_get_neighbor_resolves() {
         let id = random_identifier();
@@ -749,6 +750,7 @@ mod tests {
         let span = span_fixture();
         let from = random_identifier();
         let expected_neighbor = random_identity();
+        let query_level: LookupTableLevel = 3;
         let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
         let nonce_mock = nonce_cell.clone();
 
@@ -766,7 +768,7 @@ mod tests {
                     match event {
                         GetNeighborOp(req) => {
                             assert_eq!(req.direction, Direction::Right);
-                            assert_eq!(req.level, 0);
+                            assert_eq!(req.level, query_level);
                             *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
                             Ok(())
                         }
@@ -787,7 +789,12 @@ mod tests {
 
         let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
             tokio::join!(
-                node.get_neighbor(from, Direction::Right, Duration::from_millis(200)),
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
                 async {
                     // captured synchronously by the mock before get_neighbor's first
                     // await.
@@ -800,7 +807,7 @@ mod tests {
                             from,
                             RetNeighborOp(NeighborRes {
                                 nonce,
-                                level: 0,
+                                level: query_level,
                                 direction: Direction::Right,
                                 neighbor: Some(expected_neighbor),
                             }),
@@ -816,6 +823,85 @@ mod tests {
             neighbor_result.expect("should resolve").map(|n| n.id()),
             Some(expected_neighbor.id())
         );
+    }
+
+    /// A `get_neighbor` call whose correlated `RetNeighborOp` reply carries no neighbor
+    /// resolves to `Ok(None)`, the "queried node has none there" case `Option<Identity>`
+    /// exists to carry.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves_to_none() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let query_level: LookupTableLevel = 2;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: query_level,
+                                direction: Direction::Right,
+                                neighbor: None,
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(neighbor_result.expect("should resolve"), None);
     }
 
     /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
