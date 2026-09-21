@@ -356,52 +356,63 @@ impl EventProcessorCore for BaseNode {
                 );
                 let _enter = span.enter();
 
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if let Some(Waiter::AsyncSearch(_)) = request_id_map.get(&res.nonce) {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
+                let waiter: Option<Waiter>;
+                {
+                    let mut request_id_map = self
+                        .request_id_map
+                        .lock()
+                        .expect("mutex was poisoned by a previous panic");
+                    waiter = match request_id_map.get(&res.nonce) {
+                        Some(Waiter::AsyncSearch(_)) => request_id_map.remove(&res.nonce),
+                        Some(x) => {
+                            tracing::warn!(
+                                "invalid waiter in the map, expected Waiter::AsyncSearch, got {:?}",
+                                x
+                            );
+                            None
+                        }
+                        None => {
+                            tracing::warn!("no waiter exists in the map for that request_id");
+                            None
+                        }
+                    };
+                }
 
                 if let Some(Waiter::AsyncSearch(tx)) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::MaxLevel` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
                 }
 
                 Ok(())
             }
             RetMaxLevelOp(res) => {
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::MaxLevel(_)))
+                let waiter: Option<Waiter>;
                 {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
+                    let mut request_id_map = self
+                        .request_id_map
+                        .lock()
+                        .expect("mutex was poisoned by a previous panic");
+                    waiter = match request_id_map.get(&res.nonce) {
+                        Some(Waiter::MaxLevel(_)) => request_id_map.remove(&res.nonce),
+                        Some(x) => {
+                            tracing::warn!(
+                                "invalid waiter in the map, expected Waiter::MaxLevel, got {:?}",
+                                x
+                            );
+                            None
+                        }
+                        None => {
+                            tracing::warn!("no waiter exists in the map for that request_id");
+                            None
+                        }
+                    };
+                }
 
                 if let Some(Waiter::MaxLevel(tx)) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::AsyncSearch` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
                 }
 
                 Ok(())
@@ -417,27 +428,32 @@ impl EventProcessorCore for BaseNode {
                 );
                 let _enter = span.enter();
 
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Neighbor(_)))
+                let waiter: Option<Waiter>;
                 {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
+                    let mut request_id_map = self
+                        .request_id_map
+                        .lock()
+                        .expect("mutex was poisoned by a previous panic");
+                    waiter = match request_id_map.get(&res.nonce) {
+                        Some(Waiter::Neighbor(_)) => request_id_map.remove(&res.nonce),
+                        Some(x) => {
+                            tracing::warn!(
+                                "invalid waiter in the map, expected Waiter::Neighbor, got {:?}",
+                                x
+                            );
+                            None
+                        }
+                        None => {
+                            tracing::warn!("no waiter exists in the map for that request_id");
+                            None
+                        }
+                    };
+                }
 
                 if let Some(Waiter::Neighbor(tx)) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // waiter variant: left untouched in the map, not this arm's
-                    // concern. log and move on.
-                    tracing::debug!("no matching neighbor waiter for nonce {:?}", res.nonce);
                 }
 
                 Ok(())

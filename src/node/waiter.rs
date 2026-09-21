@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 /// [`Nonce`] in `BaseNode::request_id_map`. One map, one variant per message type, not
 /// a map per type, because the lock should protect one logical entity, "requests this
 /// node has outstanding".
+#[derive(Debug)]
 pub(super) enum Waiter {
     /// a pending `get_max_level` call, resolved by a `RetMaxLevelOp`.
     MaxLevel(oneshot::Sender<MaxLevelRes>),
