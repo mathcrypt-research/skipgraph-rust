@@ -1,7 +1,7 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext, LinkReq,
-    LinkRes, LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext, LinkOutcome,
+    LinkReq, LinkRes, LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq,
     NeighborRes, LOOKUP_TABLE_LEVELS,
 };
 use crate::network::Event::{
@@ -561,6 +561,64 @@ impl BaseNode {
         Ok(())
     }
 
+    /// Handles an inbound `GetLinkOp`: either links the candidate directly, when
+    /// this node's own slot at `(level, side)` is the correct place for it, or
+    /// forwards the request unchanged to whichever existing neighbor sits between
+    /// them, mirroring `Core::try_link`'s decision.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, candidate = ?req.candidate, side = ?req.side, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_get_link_request(&self, req: LinkReq) -> anyhow::Result<()> {
+        // `req.level` is peer-controlled with no accompanying local request to
+        // sanity-check it against, the same boundary `handle_set_link_response`
+        // already guards below for the identical reason: an out-of-range level here
+        // means a malformed or adversarial peer message, not this node's own broken
+        // invariant, so it's logged and dropped rather than answered or propagated
+        // as a hard error.
+        if req.level >= LOOKUP_TABLE_LEVELS {
+            tracing::warn!(
+                "rejected get link op from peer with out-of-range level {}",
+                req.level
+            );
+            return Ok(());
+        }
+
+        match self
+            .core
+            .try_link(req.level, req.side, req.candidate)
+            .map_err(|e| anyhow!("failed to decide link at level {}: {}", req.level, e))?
+        {
+            LinkOutcome::LinkedDirectly => {
+                let linked = Identity::new(self.core.id(), self.core.mem_vec(), self.net.address());
+                self.net
+                    .send_event(
+                        req.candidate.id(),
+                        SetLinkOp(LinkRes {
+                            nonce: req.nonce,
+                            side: req.side,
+                            level: req.level,
+                            linked: Some(linked),
+                        }),
+                    )
+                    .map_err(|e| anyhow!("failed to send link response: {}", e))?;
+                tracing::info!("linked candidate directly at level {}", req.level);
+            }
+            LinkOutcome::Forward(existing) => {
+                self.net
+                    .send_event(existing.id(), GetLinkOp(req))
+                    .map_err(|e| anyhow!("failed to forward get link request: {}", e))?;
+                tracing::info!(
+                    "forwarded get link request to existing neighbor at level {}",
+                    req.level
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Handles an inbound `SetLinkOp`: applies the link to this node's own lookup
     /// table, then resolves the correlated waiter, if any.
     #[tracing::instrument(
@@ -632,6 +690,7 @@ impl EventProcessorCore for BaseNode {
             RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
             GetNeighborOp(req) => self.handle_get_neighbor_request(req),
             RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
+            GetLinkOp(req) => self.handle_get_link_request(req),
             SetLinkOp(res) => self.handle_set_link_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
@@ -678,8 +737,8 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than, random_identity,
-        random_membership_vector, span_fixture,
+        random_address, random_identifier, random_identifier_greater_than,
+        random_identifier_less_than, random_identity, random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
@@ -1108,6 +1167,127 @@ mod tests {
             }),
         )
         .expect("failed to answer get neighbor request");
+    }
+
+    /// `process_incoming_event` answers a `GetLinkOp` whose requested slot is empty
+    /// by linking the candidate directly and replying to it with `SetLinkOp` carrying
+    /// this node's own identity, the responder side of the round trip
+    /// `send_link_request` drives from the requester side.
+    #[tokio::test]
+    async fn test_process_incoming_event_links_get_link_request_directly() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let address = random_address();
+        let candidate = random_identity();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        candidate.id(),
+                        "expected reply sent back to the candidate"
+                    );
+                    let SetLinkOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.side, Direction::Right);
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.linked.map(|i| i.id()), Some(id));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                side: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to answer get link request");
+    }
+
+    /// A `GetLinkOp` whose requested slot already holds a neighbor strictly between
+    /// this node and the candidate is forwarded, unchanged, to that neighbor instead
+    /// of being answered directly, mirroring `Core::try_link`'s `Forward` outcome.
+    #[tokio::test]
+    async fn test_process_incoming_event_forwards_get_link_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let candidate = random_identity();
+        let existing = Identity::new(
+            random_identifier_less_than(&candidate.id()),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(existing, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        existing.id(),
+                        "expected the request forwarded to the closer neighbor"
+                    );
+                    let GetLinkOp(req) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(req.candidate.id(), candidate.id());
+                    assert_eq!(req.side, Direction::Right);
+                    assert_eq!(req.level, 0);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                side: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to forward get link request");
     }
 
     /// A single in-flight `send_link_request` call resolves once its correlated
