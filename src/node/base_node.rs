@@ -1064,8 +1064,8 @@ mod tests {
     /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
     /// lookup table and replying with `RetMaxLevelOp`, the responder side of the round
     /// trip `get_max_level` drives from the requester side.
-    #[tokio::test]
-    async fn test_process_incoming_event_answers_get_max_level_request() {
+    #[test]
+    fn test_process_incoming_event_answers_get_max_level_request() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
@@ -1112,8 +1112,8 @@ mod tests {
     /// `process_incoming_event` answers a `GetNeighborOp` request by reading the local
     /// lookup table and replying with `RetNeighborOp`, the responder side of the round
     /// trip `get_neighbor` drives from the requester side.
-    #[tokio::test]
-    async fn test_process_incoming_event_answers_get_neighbor_request() {
+    #[test]
+    fn test_process_incoming_event_answers_get_neighbor_request() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
@@ -1165,8 +1165,8 @@ mod tests {
     /// by linking the candidate directly and replying to it with `SetLinkOp` carrying
     /// this node's own identity, the responder side of the round trip
     /// `send_link_request` drives from the requester side.
-    #[tokio::test]
-    async fn test_process_incoming_event_links_get_link_request_directly() {
+    #[test]
+    fn test_process_incoming_event_links_get_link_request_directly() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
@@ -1225,8 +1225,8 @@ mod tests {
     /// A `GetLinkOp` whose requested slot already holds a neighbor strictly between
     /// this node and the candidate is forwarded, unchanged, to that neighbor instead
     /// of being answered directly, mirroring `Core::try_link`'s `Forward` outcome.
-    #[tokio::test]
-    async fn test_process_incoming_event_forwards_get_link_request() {
+    #[test]
+    fn test_process_incoming_event_forwards_get_link_request() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
