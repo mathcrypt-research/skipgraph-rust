@@ -727,9 +727,9 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than,
-        random_identifier_less_than, random_identity, random_membership_vector,
-        random_sorted_identifiers, span_fixture,
+        assert_doubly_linked_at_level, random_address, random_identifier,
+        random_identifier_greater_than, random_identifier_less_than, random_identity,
+        random_membership_vector, random_sorted_identifiers, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::mock::hub::NetworkHub;
@@ -1501,24 +1501,7 @@ mod tests {
             .expect("the link request should resolve");
         }
 
-        for (i, lt) in tables.iter().enumerate() {
-            let below = if i == 0 { None } else { Some(ids[i - 1]) };
-            let above = ids.get(i + 1).copied();
-            assert_eq!(
-                lt.get_entry(0, Direction::Left)
-                    .expect("get_entry should not error")
-                    .map(|e| e.id()),
-                below,
-                "node {i}'s own left slot must hold the node below it in the chain"
-            );
-            assert_eq!(
-                lt.get_entry(0, Direction::Right)
-                    .expect("get_entry should not error")
-                    .map(|e| e.id()),
-                above,
-                "node {i}'s own right slot must hold the node above it in the chain"
-            );
-        }
+        assert_doubly_linked_at_level(&ids, &tables, 0);
     }
 
     /// The leftward mirror of the rightward two-forward case. Four nodes link
@@ -1566,24 +1549,7 @@ mod tests {
             .expect("the link request should resolve");
         }
 
-        for (i, lt) in tables.iter().enumerate() {
-            let below = if i == 0 { None } else { Some(ids[i - 1]) };
-            let above = ids.get(i + 1).copied();
-            assert_eq!(
-                lt.get_entry(0, Direction::Left)
-                    .expect("get_entry should not error")
-                    .map(|e| e.id()),
-                below,
-                "node {i}'s own left slot must hold the node below it in the chain"
-            );
-            assert_eq!(
-                lt.get_entry(0, Direction::Right)
-                    .expect("get_entry should not error")
-                    .map(|e| e.id()),
-                above,
-                "node {i}'s own right slot must hold the node above it in the chain"
-            );
-        }
+        assert_doubly_linked_at_level(&ids, &tables, 0);
     }
 
     /// A `SetLinkOp` whose `level` is out of range for the lookup table (a

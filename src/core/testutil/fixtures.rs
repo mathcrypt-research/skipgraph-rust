@@ -3,7 +3,8 @@ mod test_imports {
     pub use crate::core::model::identity::Identity;
     pub use crate::core::testutil::random::random_hex_str;
     pub use crate::core::{
-        model, Address, ArrayLookupTable, Identifier, LookupTable, MembershipVector,
+        model, Address, ArrayLookupTable, Identifier, LookupTable, LookupTableLevel,
+        MembershipVector,
     };
     pub use rand::Rng;
 }
@@ -185,6 +186,50 @@ pub fn span_fixture() -> tracing::Span {
         .try_init();
 
     tracing::span!(tracing::Level::DEBUG, "test_span")
+}
+
+/// Asserts that the nodes hold each other as immediate neighbors at `level`, forming one
+/// doubly-linked list in identifier order. Every node's left slot must hold the node before it
+/// and its right slot must hold the node after it. The two end nodes must hold `None` on their
+/// outward slot.
+///
+/// A lookup table carries no record of its own owner's identifier, so `ids` supplies it.
+/// `ids[i]` owns `tables[i]`, and `ids` must already be in ascending order. Panics if the two
+/// slices have different lengths, since that would silently leave nodes unchecked.
+///
+/// # Args
+/// * `ids`: the node identifiers, ascending.
+/// * `tables`: each node's lookup table, in the same order as `ids`.
+/// * `level`: the lookup-table level to check.
+pub fn assert_doubly_linked_at_level<L: LookupTable>(
+    ids: &[Identifier],
+    tables: &[L],
+    level: LookupTableLevel,
+) {
+    assert_eq!(
+        ids.len(),
+        tables.len(),
+        "one lookup table per identifier is required"
+    );
+
+    for (i, lt) in tables.iter().enumerate() {
+        let below = if i == 0 { None } else { Some(ids[i - 1]) };
+        let above = ids.get(i + 1).copied();
+        assert_eq!(
+            lt.get_entry(level, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|e| e.id()),
+            below,
+            "node {i}'s own left slot at level {level} must hold the node below it in the chain"
+        );
+        assert_eq!(
+            lt.get_entry(level, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|e| e.id()),
+            above,
+            "node {i}'s own right slot at level {level} must hold the node above it in the chain"
+        );
+    }
 }
 
 mod test {
