@@ -1867,6 +1867,61 @@ mod tests {
         );
     }
 
+    /// A `SetLinkOp` with no waiter at its nonce still writes to this node's own lookup
+    /// table. A repair push arrives unsolicited by definition, so the write cannot depend on
+    /// a waiter. Without this test, a change that moved the write inside the waiter branch
+    /// would leave every other link test green.
+    #[test]
+    fn test_set_link_op_applies_an_unsolicited_write() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .is_empty(),
+            "this test must drive the no-waiter path"
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce: Nonce::random(),
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("an unsolicited set link op must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked.id()),
+            "an unsolicited set link op must still install the neighbor"
+        );
+    }
+
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
     /// live in the shared `request_id_map` simultaneously, then answers both. Guards three
     /// regressions.
