@@ -26,7 +26,7 @@ impl LocalSkipGraph {
     /// Builds a fully wired `n`-node skip graph for testing, sharing a single
     /// `NetworkHub`. Each node gets a unique sorted identifier and a random
     /// membership vector. Lookup tables are populated inline by running
-    /// Algorithm 2 (insert/join, see `skip-graphs-paper.pdf`) — level 0 as a
+    /// Algorithm 2 (insert/join, see `arXiv:cs/0306043`) — level 0 as a
     /// doubly-linked list, higher levels linking each node to its closest
     /// membership-vector prefix-match on either side. Sidesteps the placeholder
     /// `BaseNode::join` so tests can assert against a correctly-wired graph.
