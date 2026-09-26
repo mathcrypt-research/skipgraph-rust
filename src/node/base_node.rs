@@ -406,7 +406,11 @@ impl BaseNode {
                 None
             }
             None => {
-                tracing::warn!("no waiter exists in the map for that request_id");
+                // a reply with no waiter is normal. an unsolicited `SetLinkOp` repair push has
+                // none by design, and neither has a reply that lands after its request timed out.
+                // TODO: install a counter metric here, so a rise in these stays visible without
+                // a warning log.
+                tracing::debug!("no waiter exists in the map for that request_id");
                 None
             }
         }
