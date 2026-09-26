@@ -632,28 +632,14 @@ impl BaseNode {
         skip(self, res)
     )]
     fn handle_set_link_response(&self, res: LinkRes) -> anyhow::Result<()> {
-        // this is the one and only write path for a lookup-table entry from a
-        // `SetLinkOp`. it is attempted unconditionally whenever `linked` is
-        // present and `level` is in range, independent of whether a matching
-        // waiter exists below. `try_link` itself may still leave the table
-        // untouched (its `LinkOutcome::Forward` case, when the existing entry
-        // already sits correctly), so "attempted" here does not guarantee a
-        // write occurred. `SetLinkOp` can also arrive unsolicited as a future
-        // repair-push correction, which must be attempted the same way
-        // regardless of any pending request.
+        // the write runs whether or not a waiter matches below. a `SetLinkOp` can
+        // also arrive unsolicited as a repair push, and that correction must land
+        // in the table too.
         //
-        // `res.level` is peer-controlled and, per the previous paragraph, has
-        // no accompanying local request to sanity-check it against — unlike
-        // `Core::try_link`'s own doc, which classifies every failure as this
-        // node's own broken invariant (CRITICAL, INTERNAL) on the assumption
-        // that `level` is already known-good by the time it's called. At this
-        // boundary that assumption doesn't hold, so an out-of-range `level` is
-        // classified RECOVERABLE, PEER-SAFE-detectable instead: it means a
-        // malformed or adversarial peer message, not a local invariant
-        // violation, so it's logged and the write is skipped rather than
-        // propagated as a hard error from this arm. A `try_link` failure at an
-        // in-range level (e.g. a poisoned local lock) is still that genuine
-        // CRITICAL, INTERNAL case and propagates as before.
+        // `res.level` comes from a peer, and no local request exists to check it
+        // against. `Core::try_link` assumes a known-good level, so this arm
+        // range-checks it first and treats a bad one as a malformed peer message
+        // rather than a local invariant violation.
         if let Some(linked) = res.linked {
             if res.level >= LOOKUP_TABLE_LEVELS {
                 tracing::warn!(
