@@ -85,6 +85,12 @@ impl BaseNode {
         self.core.mem_vec()
     }
 
+    /// Returns this node's own full identity. Lives on `BaseNode`, not `Core`, since
+    /// `Core` knows nothing about the network and has no address to contribute.
+    fn self_identity(&self) -> Identity {
+        Identity::new(self.core.id(), self.core.mem_vec(), self.net.address())
+    }
+
     #[tracing::instrument(level = "trace", parent = &self.span, fields(target = ?req.target, level = ?req.level), skip(self, req, timeout))]
     pub(crate) async fn search_by_id(
         &self,
@@ -290,8 +296,8 @@ impl BaseNode {
         }
     }
 
-    /// Sends `GetLinkOp` to `dest`, asking it to adopt `candidate` as its neighbor
-    /// on `side` at `level`, part of stage 1 of the join protocol.
+    /// Sends `GetLinkOp` to `dest`, asking it to adopt this node as its neighbor
+    /// on `dir` at `level`, part of stage 1 of the join protocol.
     ///
     /// The resulting `SetLinkOp` reply is applied to this node's own lookup table by
     /// `handle_set_link_response`, not by this method. By the time this method's
@@ -301,8 +307,7 @@ impl BaseNode {
     /// # Args
     ///
     /// * `dest`, the node to send the link request to.
-    /// * `candidate`, this node's own identity, proposed as `dest`'s neighbor.
-    /// * `side`, receiver-owned, which of `dest`'s own slots `candidate` is
+    /// * `dir`, receiver-owned, which of `dest`'s own slots this node is
     ///   proposed for.
     /// * `level`, the lookup-table level at which the link is requested.
     /// * `timeout`, how long to wait for a reply before giving up.
@@ -313,14 +318,13 @@ impl BaseNode {
     ///   dropped, or `timeout` elapses before a reply arrives.
     #[tracing::instrument(
         parent = &self.span,
-        fields(dest = ?dest, side = ?side, level = ?level),
-        skip(self, candidate, timeout)
+        fields(dest = ?dest, dir = ?dir, level = ?level),
+        skip(self, timeout)
     )]
     async fn send_link_request(
         &self,
         dest: Identifier,
-        candidate: Identity,
-        side: Direction,
+        dir: Direction,
         level: LookupTableLevel,
         timeout: Duration,
     ) -> anyhow::Result<()> {
@@ -341,8 +345,8 @@ impl BaseNode {
                 dest,
                 GetLinkOp(LinkReq {
                     nonce,
-                    candidate,
-                    side,
+                    candidate: self.self_identity(),
+                    dir,
                     level,
                 }),
             )
@@ -562,13 +566,13 @@ impl BaseNode {
     }
 
     /// Handles an inbound `GetLinkOp`: either links the candidate directly, when
-    /// this node's own slot at `(level, side)` is the correct place for it, or
+    /// this node's own slot at `(level, dir)` is the correct place for it, or
     /// forwards the request unchanged to whichever existing neighbor sits between
     /// them, mirroring `Core::try_link`'s decision.
     #[tracing::instrument(
         level = "trace",
         parent = &tracing::Span::current(),
-        fields(nonce = ?req.nonce, candidate = ?req.candidate, side = ?req.side, level = ?req.level),
+        fields(nonce = ?req.nonce, candidate = ?req.candidate, dir = ?req.dir, level = ?req.level),
         skip(self, req)
     )]
     fn handle_get_link_request(&self, req: LinkReq) -> anyhow::Result<()> {
@@ -588,17 +592,17 @@ impl BaseNode {
 
         match self
             .core
-            .try_link(req.level, req.side, req.candidate)
+            .try_link(req.level, req.dir, req.candidate)
             .map_err(|e| anyhow!("failed to decide link at level {}: {}", req.level, e))?
         {
             LinkOutcome::LinkedDirectly => {
-                let linked = Identity::new(self.core.id(), self.core.mem_vec(), self.net.address());
+                let linked = self.self_identity();
                 self.net
                     .send_event(
                         req.candidate.id(),
                         SetLinkOp(LinkRes {
                             nonce: req.nonce,
-                            side: req.side,
+                            dir: req.dir.opposite(),
                             level: req.level,
                             linked: Some(linked),
                         }),
@@ -624,7 +628,7 @@ impl BaseNode {
     #[tracing::instrument(
         level = "trace",
         parent = &tracing::Span::current(),
-        fields(nonce = ?res.nonce, side = ?res.side, level = ?res.level, linked = ?res.linked),
+        fields(nonce = ?res.nonce, dir = ?res.dir, level = ?res.level, linked = ?res.linked),
         skip(self, res)
     )]
     fn handle_set_link_response(&self, res: LinkRes) -> anyhow::Result<()> {
@@ -658,7 +662,7 @@ impl BaseNode {
                 );
             } else {
                 self.core
-                    .try_link(res.level, res.side, linked)
+                    .try_link(res.level, res.dir, linked)
                     .map_err(|e| anyhow!("failed to apply link at level {}: {}", res.level, e))?;
                 tracing::trace!("applied link to own lookup table");
             }
@@ -738,9 +742,11 @@ mod tests {
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
         random_address, random_identifier, random_identifier_greater_than,
-        random_identifier_less_than, random_identity, random_membership_vector, span_fixture,
+        random_identifier_less_than, random_identity, random_membership_vector,
+        random_sorted_identifiers, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
+    use crate::network::mock::hub::NetworkHub;
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
     use crate::node::testutil::make_core;
@@ -1202,7 +1208,7 @@ mod tests {
                     let SetLinkOp(res) = event else {
                         panic!("unexpected event: {:?}", event)
                     };
-                    assert_eq!(res.side, Direction::Right);
+                    assert_eq!(res.dir, Direction::Left);
                     assert_eq!(res.level, 0);
                     assert_eq!(res.linked.map(|i| i.id()), Some(id));
                     Ok(())
@@ -1223,7 +1229,7 @@ mod tests {
             GetLinkOp(LinkReq {
                 nonce: Nonce::random(),
                 candidate,
-                side: Direction::Right,
+                dir: Direction::Right,
                 level: 0,
             }),
         )
@@ -1268,7 +1274,7 @@ mod tests {
                         panic!("unexpected event: {:?}", event)
                     };
                     assert_eq!(req.candidate.id(), candidate.id());
-                    assert_eq!(req.side, Direction::Right);
+                    assert_eq!(req.dir, Direction::Right);
                     assert_eq!(req.level, 0);
                     Ok(())
                 }))
@@ -1283,7 +1289,7 @@ mod tests {
             GetLinkOp(LinkReq {
                 nonce: Nonce::random(),
                 candidate,
-                side: Direction::Right,
+                dir: Direction::Right,
                 level: 0,
             }),
         )
@@ -1293,14 +1299,15 @@ mod tests {
     /// A single in-flight `send_link_request` call resolves once its correlated
     /// `SetLinkOp` reply arrives, and that reply's `linked` identity is applied to
     /// this node's own lookup table via the arm's own write path (not by
-    /// `send_link_request` itself).
+    /// `send_link_request` itself). The outbound request carries this node's own
+    /// identity as `candidate`.
     #[tokio::test]
     async fn test_send_link_request_resolves() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
+        let address = random_address();
         let dest = random_identifier();
-        let candidate = random_identity();
         let linked_identity = random_identity();
         let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
         let nonce_mock = nonce_cell.clone();
@@ -1312,13 +1319,21 @@ mod tests {
             NetworkMock::clone_box
                 .each_call(matching!())
                 .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
             NetworkMock::send_event
                 .each_call(matching!(_))
                 .answers_arc(Arc::new(move |_, event_dest: Identifier, event: Event| {
                     assert_eq!(event_dest, dest, "expected request sent to dest");
                     match event {
                         GetLinkOp(req) => {
-                            assert_eq!(req.side, Direction::Right);
+                            assert_eq!(
+                                req.candidate,
+                                Identity::new(id, mem_vec, address),
+                                "expected the request to carry this node's own identity"
+                            );
+                            assert_eq!(req.dir, Direction::Right);
                             assert_eq!(req.level, 0);
                             *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
                             Ok(())
@@ -1341,13 +1356,7 @@ mod tests {
 
         let (send_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
             tokio::join!(
-                node.send_link_request(
-                    dest,
-                    candidate,
-                    Direction::Right,
-                    0,
-                    Duration::from_millis(200)
-                ),
+                node.send_link_request(dest, Direction::Right, 0, Duration::from_millis(200)),
                 async {
                     // captured synchronously by the mock before send_link_request's
                     // first await.
@@ -1360,7 +1369,7 @@ mod tests {
                             dest,
                             SetLinkOp(LinkRes {
                                 nonce,
-                                side: Direction::Right,
+                                dir: Direction::Right,
                                 level: 0,
                                 linked: Some(linked_identity),
                             }),
@@ -1380,6 +1389,216 @@ mod tests {
             Some(linked_identity.id()),
             "the SetLinkOp arm should have applied the link to this node's own table"
         );
+    }
+
+    /// A full `GetLinkOp`/`SetLinkOp` round trip over the mock hub leaves both nodes'
+    /// own tables ordered correctly. The candidate asks the responder, which holds the
+    /// smaller identifier, to install the candidate in the responder's own right slot,
+    /// and the responder's reply must land in the candidate's own left slot rather than
+    /// its right one. A reply naming the candidate's right slot would put a smaller
+    /// identifier there, breaking the ordering invariant, and `try_link` on the
+    /// candidate cannot reject that write because the slot it lands in is empty.
+    #[tokio::test]
+    async fn test_link_round_trip_fills_the_candidates_mirror_slot() {
+        let hub = NetworkHub::new();
+        let responder_id = random_identifier();
+        let candidate_id = random_identifier_greater_than(&responder_id);
+
+        let responder_lt = ArrayLookupTable::new();
+        let candidate_lt = ArrayLookupTable::new();
+        let responder_net =
+            NetworkHub::new_mock_network(hub.clone(), responder_id, random_address())
+                .expect("failed to create the responder's network");
+        let candidate_net =
+            NetworkHub::new_mock_network(hub.clone(), candidate_id, random_address())
+                .expect("failed to create the candidate's network");
+
+        // the responder's own handle is never used directly. `BaseNode::new` registers a
+        // clone of it on its network, and that clone is what answers the inbound request.
+        let _responder = BaseNode::new(
+            span_fixture(),
+            Box::new(make_core(responder_id, Box::new(responder_lt.clone()))),
+            responder_net.clone_box(),
+        )
+        .expect("failed to create the responder node");
+        let candidate = BaseNode::new(
+            span_fixture(),
+            Box::new(make_core(candidate_id, Box::new(candidate_lt.clone()))),
+            candidate_net.clone_box(),
+        )
+        .expect("failed to create the candidate node");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            candidate.send_link_request(
+                responder_id,
+                Direction::Right,
+                0,
+                Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("test timed out")
+        .expect("the link request should resolve");
+
+        assert_eq!(
+            responder_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(candidate_id),
+            "the responder must hold the candidate in the slot it was asked to fill"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(responder_id),
+            "the candidate's own left slot must hold the responder"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "the candidate's own right slot must stay empty, the responder's identifier is smaller"
+        );
+    }
+
+    /// A `GetLinkOp` that forwards twice before any node accepts it still lands its
+    /// reply in the original candidate's mirror slot, not the forwarding hop's. Four
+    /// nodes link rightward through real round trips, each one asking the smallest
+    /// node, so the last request walks past two already-linked nodes before the third
+    /// accepts it, and the resulting chain must be reciprocal on every node.
+    ///
+    /// The bug class this catches is worse than one misplaced pointer. A reply naming
+    /// the unmirrored slot puts a smaller identifier in the candidate's own right
+    /// slot, and the next request then forwards between those two nodes without
+    /// bound, since each one sees the other as closer to the new candidate. The mock
+    /// hub dispatches re-entrantly, so an unbounded message count surfaces as an
+    /// overflowed stack and aborts the test binary.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_rightward() {
+        let hub = NetworkHub::new();
+        let ids = random_sorted_identifiers(4);
+        let tables: Vec<ArrayLookupTable> =
+            (0..ids.len()).map(|_| ArrayLookupTable::new()).collect();
+        let nodes: Vec<BaseNode> = ids
+            .iter()
+            .zip(tables.iter())
+            .map(|(&id, lt)| {
+                let net = NetworkHub::new_mock_network(hub.clone(), id, random_address())
+                    .expect("failed to create a mock network");
+                BaseNode::new(
+                    span_fixture(),
+                    Box::new(make_core(id, Box::new(lt.clone()))),
+                    net.clone_box(),
+                )
+                .expect("failed to create a node")
+            })
+            .collect();
+
+        // every candidate asks the smallest node, so its request forwards past every
+        // node already linked to that node's right before some node accepts it.
+        for candidate in nodes.iter().skip(1) {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[0],
+                    Direction::Right,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        for (i, lt) in tables.iter().enumerate() {
+            let below = if i == 0 { None } else { Some(ids[i - 1]) };
+            let above = ids.get(i + 1).copied();
+            assert_eq!(
+                lt.get_entry(0, Direction::Left)
+                    .expect("get_entry should not error")
+                    .map(|e| e.id()),
+                below,
+                "node {i}'s own left slot must hold the node below it in the chain"
+            );
+            assert_eq!(
+                lt.get_entry(0, Direction::Right)
+                    .expect("get_entry should not error")
+                    .map(|e| e.id()),
+                above,
+                "node {i}'s own right slot must hold the node above it in the chain"
+            );
+        }
+    }
+
+    /// The leftward mirror of the rightward two-forward case. Four nodes link
+    /// leftward through real round trips, each one asking the largest node, so the
+    /// last request walks past two already-linked nodes before the third accepts it.
+    /// This is the other arm of `Direction::opposite`, and of `Core::try_link`'s
+    /// `Forward` decision, so a one-sided mirror passes the rightward case and fails
+    /// here.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_leftward() {
+        let hub = NetworkHub::new();
+        let ids = random_sorted_identifiers(4);
+        let tables: Vec<ArrayLookupTable> =
+            (0..ids.len()).map(|_| ArrayLookupTable::new()).collect();
+        let nodes: Vec<BaseNode> = ids
+            .iter()
+            .zip(tables.iter())
+            .map(|(&id, lt)| {
+                let net = NetworkHub::new_mock_network(hub.clone(), id, random_address())
+                    .expect("failed to create a mock network");
+                BaseNode::new(
+                    span_fixture(),
+                    Box::new(make_core(id, Box::new(lt.clone()))),
+                    net.clone_box(),
+                )
+                .expect("failed to create a node")
+            })
+            .collect();
+
+        // every candidate asks the largest node, so its request forwards past every
+        // node already linked to that node's left before some node accepts it.
+        let largest = ids.len() - 1;
+        for candidate in nodes[..largest].iter().rev() {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[largest],
+                    Direction::Left,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        for (i, lt) in tables.iter().enumerate() {
+            let below = if i == 0 { None } else { Some(ids[i - 1]) };
+            let above = ids.get(i + 1).copied();
+            assert_eq!(
+                lt.get_entry(0, Direction::Left)
+                    .expect("get_entry should not error")
+                    .map(|e| e.id()),
+                below,
+                "node {i}'s own left slot must hold the node below it in the chain"
+            );
+            assert_eq!(
+                lt.get_entry(0, Direction::Right)
+                    .expect("get_entry should not error")
+                    .map(|e| e.id()),
+                above,
+                "node {i}'s own right slot must hold the node above it in the chain"
+            );
+        }
     }
 
     /// A `SetLinkOp` whose `level` is out of range for the lookup table (a
@@ -1425,7 +1644,7 @@ mod tests {
             origin,
             SetLinkOp(LinkRes {
                 nonce,
-                side: Direction::Left,
+                dir: Direction::Left,
                 level: LOOKUP_TABLE_LEVELS,
                 linked: Some(linked_identity),
             }),

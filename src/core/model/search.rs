@@ -25,7 +25,8 @@ pub struct IdSearchReq {
     pub origin: Identifier,
     /// The level of the lookup table where the search is being performed.
     pub level: LookupTableLevel,
-    /// The direction of the search.
+    /// The direction of the search. Receiver-owned, and neither the sender nor a
+    /// forwarding hop transforms it. See [`Direction`] for the rule.
     pub direction: Direction,
 }
 
