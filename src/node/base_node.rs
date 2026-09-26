@@ -729,13 +729,12 @@ mod tests {
     use crate::core::testutil::fixtures::{
         assert_doubly_linked_at_level, random_address, random_identifier,
         random_identifier_greater_than, random_identifier_less_than, random_identity,
-        random_membership_vector, random_sorted_identifiers, span_fixture,
+        random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
-    use crate::network::mock::hub::NetworkHub;
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
-    use crate::node::testutil::make_core;
+    use crate::node::testutil::{make_core, sorted_nodes_fixture};
     use unimock::*;
 
     /// builds a `BaseNode` over `mock_net`, factoring out repeated core/node construction.
@@ -1386,33 +1385,13 @@ mod tests {
     /// candidate cannot reject that write because the slot it lands in is empty.
     #[tokio::test]
     async fn test_link_round_trip_fills_the_candidates_mirror_slot() {
-        let hub = NetworkHub::new();
-        let responder_id = random_identifier();
-        let candidate_id = random_identifier_greater_than(&responder_id);
-
-        let responder_lt = ArrayLookupTable::new();
-        let candidate_lt = ArrayLookupTable::new();
-        let responder_net =
-            NetworkHub::new_mock_network(hub.clone(), responder_id, random_address())
-                .expect("failed to create the responder's network");
-        let candidate_net =
-            NetworkHub::new_mock_network(hub.clone(), candidate_id, random_address())
-                .expect("failed to create the candidate's network");
-
-        // the responder's own handle is never used directly. `BaseNode::new` registers a
-        // clone of it on its network, and that clone is what answers the inbound request.
-        let _responder = BaseNode::new(
-            span_fixture(),
-            Box::new(make_core(responder_id, Box::new(responder_lt.clone()))),
-            responder_net.clone_box(),
-        )
-        .expect("failed to create the responder node");
-        let candidate = BaseNode::new(
-            span_fixture(),
-            Box::new(make_core(candidate_id, Box::new(candidate_lt.clone()))),
-            candidate_net.clone_box(),
-        )
-        .expect("failed to create the candidate node");
+        // the smaller identifier is the responder, and the fixture returns them ascending.
+        // the responder's own node handle is never used directly. `BaseNode::new` registers
+        // a clone of its network, and that clone is what answers the inbound request.
+        let (ids, nodes, tables) = sorted_nodes_fixture(2);
+        let (responder_id, candidate_id) = (ids[0], ids[1]);
+        let (responder_lt, candidate_lt) = (&tables[0], &tables[1]);
+        let candidate = &nodes[1];
 
         tokio::time::timeout(
             Duration::from_secs(2),
@@ -1465,24 +1444,7 @@ mod tests {
     /// so that loop overflows the stack and aborts the test binary.
     #[tokio::test]
     async fn test_link_round_trip_forwards_twice_rightward() {
-        let hub = NetworkHub::new();
-        let ids = random_sorted_identifiers(4);
-        let tables: Vec<ArrayLookupTable> =
-            (0..ids.len()).map(|_| ArrayLookupTable::new()).collect();
-        let nodes: Vec<BaseNode> = ids
-            .iter()
-            .zip(tables.iter())
-            .map(|(&id, lt)| {
-                let net = NetworkHub::new_mock_network(hub.clone(), id, random_address())
-                    .expect("failed to create a mock network");
-                BaseNode::new(
-                    span_fixture(),
-                    Box::new(make_core(id, Box::new(lt.clone()))),
-                    net.clone_box(),
-                )
-                .expect("failed to create a node")
-            })
-            .collect();
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
 
         // every candidate asks the smallest node, so its request forwards past every
         // node already linked to that node's right before some node accepts it.
@@ -1512,24 +1474,7 @@ mod tests {
     /// here.
     #[tokio::test]
     async fn test_link_round_trip_forwards_twice_leftward() {
-        let hub = NetworkHub::new();
-        let ids = random_sorted_identifiers(4);
-        let tables: Vec<ArrayLookupTable> =
-            (0..ids.len()).map(|_| ArrayLookupTable::new()).collect();
-        let nodes: Vec<BaseNode> = ids
-            .iter()
-            .zip(tables.iter())
-            .map(|(&id, lt)| {
-                let net = NetworkHub::new_mock_network(hub.clone(), id, random_address())
-                    .expect("failed to create a mock network");
-                BaseNode::new(
-                    span_fixture(),
-                    Box::new(make_core(id, Box::new(lt.clone()))),
-                    net.clone_box(),
-                )
-                .expect("failed to create a node")
-            })
-            .collect();
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
 
         // every candidate asks the largest node, so its request forwards past every
         // node already linked to that node's left before some node accepts it.
