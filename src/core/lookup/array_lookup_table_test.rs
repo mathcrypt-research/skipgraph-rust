@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(Some(id2), lt.get_entry(0, Direction::Left).unwrap());
     }
 
-    /// (a) try_link into an empty slot links directly and inserts the candidate, on both sides.
+    /// (a) try_link into an empty slot links directly and inserts the candidate, on both directions.
     #[test]
     fn test_try_link_empty_slot_links_directly() {
         let lt = ArrayLookupTable::new();
@@ -205,7 +205,7 @@ mod tests {
     }
 
     /// (a) try_relink is a no-op returning AlreadyConsistent when the entry already equals the
-    /// claimant, on both sides.
+    /// claimant, on both directions.
     #[test]
     fn test_try_relink_already_consistent() {
         let lt = ArrayLookupTable::new();
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(existing));
     }
 
-    /// (c) try_relink into an empty slot relinks with no eviction, on both sides.
+    /// (c) try_relink into an empty slot relinks with no eviction, on both directions.
     #[test]
     fn test_try_relink_empty_slot_relinks_with_no_eviction() {
         let lt = ArrayLookupTable::new();
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(lt.max_populated_level(), None);
     }
 
-    /// `max_populated_level` returns the populated level when only one side of the table has
+    /// `max_populated_level` returns the populated level when only one direction of the table has
     /// an entry.
     #[test]
     fn test_max_populated_level_one_side_populated() {

@@ -280,7 +280,7 @@ impl LookupTable for ArrayLookupTable {
     }
 
     /// Implements [`LookupTable::max_populated_level`] under a single `inner.read()` guard, so
-    /// the left and right sides are inspected against the same snapshot of the table.
+    /// the left and right directions are inspected against the same snapshot of the table.
     fn max_populated_level(&self) -> Option<LookupTableLevel> {
         let inner = self.inner.read();
 

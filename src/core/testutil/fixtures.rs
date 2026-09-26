@@ -105,7 +105,7 @@ pub fn random_lookup_table(n: usize) -> ArrayLookupTable {
 }
 
 /// Sets the level-0 `Left` neighbor to the zero identifier/membership vector and the `Right`
-/// neighbor to the maximum, so any left/right search has a neighbor on that side.
+/// neighbor to the maximum, so any left/right search has a neighbor on that direction.
 pub fn random_lookup_table_with_extremes(n: usize) -> ArrayLookupTable {
     let lt = random_lookup_table(n);
     let zero_id = Identifier::from_bytes(&[0u8; model::IDENTIFIER_SIZE_BYTES]).unwrap();

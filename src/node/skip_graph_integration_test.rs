@@ -28,7 +28,7 @@ impl LocalSkipGraph {
     /// membership vector. Lookup tables are populated inline by running
     /// Algorithm 2 (insert/join, see `arXiv:cs/0306043`) — level 0 as a
     /// doubly-linked list, higher levels linking each node to its closest
-    /// membership-vector prefix-match on either side. Sidesteps the placeholder
+    /// membership-vector prefix-match on either direction. Sidesteps the placeholder
     /// `BaseNode::join` so tests can assert against a correctly-wired graph.
     fn new(n: usize) -> anyhow::Result<Self> {
         if n == 0 {
