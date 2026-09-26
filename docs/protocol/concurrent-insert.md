@@ -237,7 +237,29 @@ on) — transient, owned by `u` alone, discarded once climbing stops.
 ### 4.1 `change_neighbor`, restated
 
 Run by node `v` on receiving a link-request for candidate `u` on `dir` at `level` (this is what both
-`GetLinkOp` handling and a `BuddyOp` prefix match funnel into):
+`GetLinkOp` handling and a `BuddyOp` prefix match funnel into).
+
+**Precondition, checked before the decision.** Every field of an inbound link-request is
+peer-controlled, and `v` holds no local request to check it against. The decision below cannot catch a
+bad one, because it only ever weighs `v`'s existing entry against `u` and never against `v` itself. So
+a violated precondition installs an out-of-order or wrong-list neighbor silently. `v` therefore
+validates the request first, and drops it when any check below fails.
+
+```
+if level is not a real lookup-table level                              -> drop
+if dir == Right and u.key <= v.key                                     -> drop
+if dir == Left  and u.key >= v.key                                     -> drop
+if v.mem_vec().common_prefix_bit(u.mem_vec()) < level                  -> drop
+```
+
+A drop is logged locally and answered with nothing, because a failure here means a malformed or
+adversarial peer rather than a broken local invariant of `v`. No legitimate request is ever dropped. A
+forwarded link-request keeps every one of these properties. The hop it forwards to sits strictly
+between `v` and `u`, so `u` stays beyond that hop on `dir`, and every node in one level-`level` list
+shares that list's prefix. The last check is the same prefix rule Section 3 states for `BuddyOp`, and
+it binds on `GetLinkOp` for the same reason.
+
+The decision `v` then runs:
 
 ```
 cmp = (dir == Right) ? LessThan : GreaterThan
