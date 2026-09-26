@@ -1452,18 +1452,17 @@ mod tests {
         );
     }
 
-    /// A `GetLinkOp` that forwards twice before any node accepts it still lands its
-    /// reply in the original candidate's mirror slot, not the forwarding hop's. Four
-    /// nodes link rightward through real round trips, each one asking the smallest
-    /// node, so the last request walks past two already-linked nodes before the third
-    /// accepts it, and the resulting chain must be reciprocal on every node.
+    /// A `GetLinkOp` still replies into the original candidate's mirror slot after two
+    /// forwarding hops, never into a hop's slot. Four nodes link rightward over real
+    /// round trips, and every candidate asks the smallest node, so the last request
+    /// walks past two linked nodes before the third accepts it. Every node must end up
+    /// pointing back at its neighbor.
     ///
-    /// The bug class this catches is worse than one misplaced pointer. A reply naming
-    /// the unmirrored slot puts a smaller identifier in the candidate's own right
-    /// slot, and the next request then forwards between those two nodes without
-    /// bound, since each one sees the other as closer to the new candidate. The mock
-    /// hub dispatches re-entrantly, so an unbounded message count surfaces as an
-    /// overflowed stack and aborts the test binary.
+    /// A reply that names the unmirrored slot does more than misplace one pointer. It
+    /// writes a smaller identifier into the candidate's own right slot, and the next
+    /// request then forwards between those two nodes forever, because each one reads
+    /// the other as closer to the new candidate. The mock hub dispatches re-entrantly,
+    /// so that loop overflows the stack and aborts the test binary.
     #[tokio::test]
     async fn test_link_round_trip_forwards_twice_rightward() {
         let hub = NetworkHub::new();
