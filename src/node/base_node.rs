@@ -336,7 +336,16 @@ impl BaseNode {
                 .request_id_map
                 .lock()
                 .expect("mutex was poisoned by a previous panic");
-            request_id_map.insert(nonce, Waiter::Link(tx));
+            request_id_map.insert(
+                nonce,
+                Waiter::Link {
+                    tx,
+                    level,
+                    // the reply names this node's own slot, the mirror of the slot the
+                    // request named in the responder's table.
+                    dir: dir.opposite(),
+                },
+            );
         }
         let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
 
@@ -699,9 +708,12 @@ impl BaseNode {
             }
         }
 
-        if let Some(Waiter::Link(tx)) =
-            self.take_waiter(res.nonce, "Link", |w| matches!(w, Waiter::Link(_)))
-        {
+        // the waiter matches only on the slot it asked about, so a reply naming any other
+        // slot leaves the request outstanding to time out. a peer cannot end this node's
+        // wait with an answer to a question it never asked.
+        if let Some(Waiter::Link { tx, .. }) = self.take_waiter(res.nonce, "Link", |w| {
+            matches!(w, Waiter::Link { level, dir, .. } if *level == res.level && *dir == res.dir)
+        }) {
             if let Err(e) = tx.send(res) {
                 tracing::warn!("failed to send the response to the receiver end: {:?}", e)
             }
@@ -1599,10 +1611,14 @@ mod tests {
 
         let nonce = Nonce::random();
         let (tx, rx) = oneshot::channel::<LinkRes>();
-        node.request_id_map
-            .lock()
-            .expect("mutex poisoned")
-            .insert(nonce, Waiter::Link(tx));
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: LOOKUP_TABLE_LEVELS,
+                dir: Direction::Left,
+            },
+        );
 
         let result = node.process_incoming_event(
             origin,
@@ -1788,6 +1804,66 @@ mod tests {
                 .expect("get_entry should not error"),
             None,
             "a wrong-side linked node must never reach the lookup table"
+        );
+    }
+
+    /// A `SetLinkOp` carrying a live nonce but naming a slot other than the one the request
+    /// asked about leaves that request outstanding, so it times out rather than resolving on
+    /// an answer to a question this node never asked. `Waiter::Link` records the slot when
+    /// `send_link_request` parks the waiter, for exactly this comparison.
+    ///
+    /// The reply names a slot this node can legally fill, so its table write still runs.
+    /// Only the waiter match is under test here.
+    #[test]
+    fn test_set_link_op_ignores_a_reply_naming_another_slot() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let core = Box::new(make_core(id, Box::new(ArrayLookupTable::new())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, _rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: 0,
+                dir: Direction::Left,
+            },
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce,
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("a mismatched peer reply must not error the whole event");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .contains_key(&nonce),
+            "the waiter must stay parked, so its own request still times out"
         );
     }
 
