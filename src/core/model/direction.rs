@@ -16,20 +16,20 @@ use std::fmt::{Debug, Display};
 ///
 /// On the wire the value is receiver-owned, so it names a slot in the table of the node that
 /// receives the message. That is what decides whether the sender transforms the value before
-/// putting it on the wire, and three shapes cover every case.
+/// putting it on the wire, and three cases cover every message.
 ///
-/// 1. A request naming a slot in the receiver's own table carries the value the sender chose,
-///    untransformed.
-/// 2. A request forwarded onward to a further node passes the value through unchanged, because the
-///    next hop writes the same direction of its own table.
-/// 3. A response reporting a write the sender just made in its own table, and so instructing the
-///    receiver to make the reciprocal write, must invert the value with [`Direction::opposite`]
-///    before sending, because the receiver's matching slot is the mirror of the one the sender
-///    wrote.
+/// 1. **A request.** The sender sends the value unchanged, and the receiver writes the slot it
+///    names.
+/// 2. **A forwarded request.** Each hop passes the value on unchanged. The next hop writes the
+///    same direction of its own table, so the value still names the correct slot.
+/// 3. **A reply that reports a write.** The sender wrote a slot in its own table, so it inverts
+///    the value with [`Direction::opposite`] before replying. The receiver's matching slot is the
+///    mirror of that one.
 ///
-/// A response that only echoes a query coordinate is not the third shape. It reports on the
-/// responder's own table, and its requester writes no entry from the echoed value, so inverting it
-/// would only make the coordinate disagree with the slot that was actually read.
+/// Not every reply falls under the third case. A reply that only repeats back the direction the
+/// request asked about carries the value unchanged. The responder read that slot of its own table
+/// and reports what it found there. The requester writes nothing from the value. Inverting it
+/// would name a slot the responder never read.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Direction {
     Left,
