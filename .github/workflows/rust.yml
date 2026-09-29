@@ -33,5 +33,7 @@ jobs:
           override: true
       - name: Install Tools
         run: make install-tools
+      - name: Check Format
+        run: make format
       - name: Run Lint
         run: make lint
