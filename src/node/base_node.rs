@@ -359,7 +359,14 @@ impl BaseNode {
                     level,
                 }),
             )
-            .map_err(|e| anyhow!("failed to send get link request: {}", e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "failed to send get link request to {:?} on {:?}: {}",
+                    dest,
+                    dir,
+                    e
+                )
+            })?;
         tracing::info!("sent get link request, pending response");
 
         match tokio::time::timeout(timeout, rx).await {
@@ -368,29 +375,29 @@ impl BaseNode {
                 Ok(())
             }
             Ok(Err(_)) => Err(anyhow!(
-                "failed to receive get link response: sender dropped"
+                "failed to receive get link response from {:?} on {:?}: sender dropped",
+                dest,
+                dir
             )),
-            Err(_) => Err(anyhow!("timed out waiting for get link response")),
+            Err(_) => Err(anyhow!(
+                "timed out waiting for get link response from {:?} on {:?}",
+                dest,
+                dir
+            )),
         }
     }
 
-    /// Drives stage 1, level-0 linking, of the join protocol for this not-yet-joined
-    /// node.
+    /// Links this joining node to its two level-0 neighbors, one on each side of its id.
     ///
-    /// `introducer` has no known position relative to this node, so the search
-    /// direction depends on it: right, toward this node's predecessor `s`, when
-    /// `introducer`'s id is less than this node's own, and left, toward its successor
-    /// `z`, when greater. Either way `introducer` already satisfies the chosen
-    /// direction, the first-hop precondition of [`Self::send_search_by_id_req`]. An
-    /// equal id fits neither branch and is rejected (see `# Errors`).
+    /// The search starts at `introducer` and looks toward this node's id. If
+    /// `introducer`'s id is smaller, the search finds the node just below this id.
+    /// If it is larger, the search finds the node just above. Then this node asks
+    /// that node for its neighbor on the other side of this id, which is the second
+    /// neighbor.
     ///
-    /// The search always resolves, since the graph is non-empty. The resolved node is
-    /// then queried, on the same direction, for its own neighbor there, which gives
-    /// the opposite-direction node. Both link requests are sent concurrently, since
-    /// they resolve different directions of this node's table. A missing neighbor
-    /// leaves that direction unresolved for background repair to heal later, not an
-    /// error. Replies are applied to this node's table by `handle_set_link_response`,
-    /// not by this method.
+    /// Both link requests go out at the same time. If the second neighbor does not
+    /// exist, that side stays empty and background repair fills it later. Replies
+    /// update this node's table in `handle_set_link_response`, not here.
     ///
     /// # Args
     ///
