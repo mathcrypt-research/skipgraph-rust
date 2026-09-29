@@ -387,13 +387,14 @@ impl BaseNode {
         }
     }
 
-    /// Links this joining node to its two level-0 neighbors, one on each side of its id.
+    /// Links this joining node to its two level-0 neighbors, one on each side of
+    /// `self.id()`.
     ///
-    /// The search starts at `introducer` and looks toward this node's id. If
-    /// `introducer`'s id is smaller, the search finds the node just below this id.
+    /// The search starts at `introducer` and looks toward `self.id()`. If
+    /// `introducer`'s id is smaller, the search finds the node just below `self.id()`.
     /// If it is larger, the search finds the node just above. Then this node asks
-    /// that node for its neighbor on the other side of this id, which is the second
-    /// neighbor.
+    /// that node for its neighbor on the other side of `self.id()`, which is the
+    /// second neighbor.
     ///
     /// Both link requests go out at the same time. If the second neighbor does not
     /// exist, that side stays empty and background repair fills it later. Replies
@@ -409,7 +410,7 @@ impl BaseNode {
     ///
     /// # Errors
     ///
-    /// * **RECOVERABLE, INTERNAL.** `introducer`'s id equals this node's own id.
+    /// * **RECOVERABLE, INTERNAL.** `introducer`'s id equals `self.id()`.
     /// * **RECOVERABLE, INTERNAL.** Any of the underlying round trips fails to send,
     ///   has its reply channel dropped, or times out.
     #[tracing::instrument(
@@ -2319,11 +2320,11 @@ mod tests {
         );
     }
 
-    /// With `introducer.id() < u.id()` (the search-right branch) and both `s` and `z`
-    /// present, both `GetLinkOp`s are answered with a confirming `SetLinkOp`, and
+    /// With `introducer.id() < self.id()` (the search-right branch) and both `s`, the
+    /// node just below `self.id()`, and `z`, the node just above, present, both
+    /// `GetLinkOp`s are answered with a confirming `SetLinkOp`, and
     /// `join_stage1_link_level0` resolves once each reply is applied to this node's
-    /// own table. The `s`-reply lands on the left slot, the `z`-reply on the right,
-    /// per the documented asymmetry.
+    /// own table. The `s`-reply lands on the left slot, the `z`-reply on the right.
     #[tokio::test]
     async fn test_join_stage1_link_level0_links_both_sides() {
         let node_id = random_identifier();
@@ -2376,7 +2377,7 @@ mod tests {
                             assert_eq!(
                                 req.direction,
                                 Direction::Right,
-                                "introducer.id() < u.id() must search Direction::Right"
+                                "introducer.id() < self.id() must search Direction::Right"
                             );
                             *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
                         }
