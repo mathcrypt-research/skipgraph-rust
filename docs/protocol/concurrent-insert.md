@@ -98,7 +98,7 @@ reused **unmodified** for the Stage-1 introducer search (Section 3.2) — no cha
 
 `Core::search_by_id` and `BaseNode::search_by_id` are synchronous today, correlating one relayed
 request with one blocking channel receive. Join cannot use that pattern directly: Stage 1 has two
-independent outstanding requests in flight at once (to `s` and to `z`), and Stage 2 has two independent
+independent link requests (to `s` and to `z`) that may be outstanding together, and Stage 2 has two independent
 outstanding requests per level, for up to `LOOKUP_TABLE_LEVELS` (256) levels — spawning an OS thread per
 outstanding request does not scale, and the periodic repair task (Section 6) requires `tokio::spawn`
 regardless. The join orchestration entry point should therefore be `async`, correlating replies via
@@ -141,9 +141,8 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
    - If `introducer.id() > u.id()`: the same request with `direction: Direction::Left` instead.
      `Direction::Left` search semantics ("smallest identifier ≥ target") resolves `u`'s successor `z`
      directly.
-   - `introducer.id() == u.id()` is an id collision, not a case either branch resolves. `u` surfaces
-     this as a typed error to its own caller and sends no request at all, rather than guessing a
-     direction.
+   - `introducer.id() == u.id()` is an id collision, not a case either branch resolves. `u` returns
+     an error to its own caller and sends no request at all, rather than guessing a direction.
 
 4. Terminal node replies `SearchByIdResponse(IdSearchRes{ ..., result })` directly to `u`. The node at
    `result` is called `s` when the search ran `Direction::Right`, or `z` when it ran `Direction::Left`.
@@ -154,6 +153,10 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
    `s`; when `u.id() < introducer.id()`, it is `z` instead, and step 5 below queries it on
    `Direction::Left` rather than `Direction::Right`.
 
+   *Id collision:* if `result == u.id()`, another node already holds `u`'s id. This is the paper's
+   `foundOp` outcome, and the insert stops there. `u` returns an error to its own caller and sends no
+   neighbor query and no link request.
+
 5. `u` queries whichever node the search resolved, on the *same* direction the search used:
    `u → result`: `GetNeighborOp{ nonce, origin: u.id(), level: 0, direction }` (the same `direction`
    as step 3).
@@ -162,7 +165,9 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
    `result` currently believes it has none there. This is `z` when the search resolved `s` (queried on
    `Direction::Right`), or `s` when the search resolved `z` (queried on `Direction::Left`).
 
-7. `u` now sends **two independent, concurrent** requests:
+7. `u` now sends **two independent** requests. They may go out together or one after the other,
+   because correctness does not depend on their overlap. Each receiver's forwarding (Section 4) is what
+   keeps concurrent inserts safe. The two requests are:
    - `u → result` (the node the search itself resolved in step 4, always known, unconditional):
      `GetLinkOp{ nonce, candidate: u_identity, dir: direction, level: 0 }`, offering `u` for
      `result`'s slot on the search's own direction. When the search ran `Direction::Right`

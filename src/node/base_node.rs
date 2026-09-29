@@ -396,7 +396,8 @@ impl BaseNode {
     /// that node for its neighbor on the other side of `self.id()`, which is the
     /// second neighbor.
     ///
-    /// Both link requests go out at the same time. If the second neighbor does not
+    /// The two link requests are independent. This method sends them together, but
+    /// correctness does not depend on their overlap. If the second neighbor does not
     /// exist, that side stays empty and background repair fills it later. Replies
     /// update this node's table in `handle_set_link_response`, not here.
     ///
@@ -411,6 +412,8 @@ impl BaseNode {
     /// # Errors
     ///
     /// * **RECOVERABLE, INTERNAL.** `introducer`'s id equals `self.id()`.
+    /// * **RECOVERABLE, INTERNAL.** The search resolves a node whose id equals
+    ///   `self.id()`, so another node already holds this id. No link request is sent.
     /// * **RECOVERABLE, INTERNAL.** Any of the underlying round trips fails to send,
     ///   has its reply channel dropped, or times out.
     #[tracing::instrument(
@@ -447,6 +450,11 @@ impl BaseNode {
             )
             .await?
             .result;
+        if search_result == own_id {
+            return Err(anyhow!(
+                "stage-1 search resolved a node with this node's own id, another node already holds it"
+            ));
+        }
         tracing::info!(
             "resolved stage-1 search anchor {:?} on {:?}",
             search_result,
@@ -2512,5 +2520,82 @@ mod tests {
             Some(z_id),
             "z's reply must land on this node's own right slot"
         );
+    }
+
+    /// When the stage-1 search resolves a node that holds this node's own id,
+    /// `join_stage1_link_level0` returns an error and sends no neighbor query and no
+    /// link request, since another node already holds that id.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_aborts_on_id_collision() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let introducer = random_identifier_less_than(&node_id);
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let search_mock = search_nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!(
+                            "no request may follow a colliding search result, got {:?} to {:?}",
+                            event, dest
+                        ),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce = loop {
+                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            };
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: node_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect_err("a search result equal to this node's own id must abort the join");
     }
 }
