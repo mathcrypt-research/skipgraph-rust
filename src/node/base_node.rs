@@ -377,38 +377,20 @@ impl BaseNode {
     /// Drives stage 1, level-0 linking, of the join protocol for this not-yet-joined
     /// node.
     ///
-    /// `introducer` is an arbitrary, externally-supplied node with no guaranteed
-    /// position relative to this node's own id, so the search direction cannot be
-    /// fixed: this node picks `Direction::Right` when `introducer`'s id is less than
-    /// its own (searching for its predecessor `s`, mirroring today's single-branch
-    /// behavior) and `Direction::Left` when `introducer`'s id is greater (searching
-    /// for its successor `z` instead), in both cases so `introducer` itself already
-    /// satisfies the chosen direction's relation to this node's own id. That is the
-    /// first-hop precondition [`Self::send_search_by_id_req`] states. `introducer`'s id
-    /// equal to this node's own is an id collision, not something either branch
-    /// resolves.
+    /// `introducer` has no known position relative to this node, so the search
+    /// direction depends on it: right, toward this node's predecessor `s`, when
+    /// `introducer`'s id is less than this node's own, and left, toward its successor
+    /// `z`, when greater. Either way `introducer` already satisfies the chosen
+    /// direction, the first-hop precondition of [`Self::send_search_by_id_req`]. An
+    /// equal id fits neither branch and is rejected (see `# Errors`).
     ///
-    /// Whichever node the search resolves is queried, on the same direction, for its
-    /// own neighbor there; that query's answer, if any, sits on the opposite direction.
-    /// This reproduces `s` and `z` exactly as the two-branch structure above intends:
-    /// searching right resolves `s` directly and queries `s`'s own right neighbor for
-    /// `z`; searching left resolves `z` directly and queries `z`'s own left neighbor
-    /// for `s`. The node the search resolved always gets offered the search's own
-    /// direction as its `GetLinkOp` `dir` (`s` is always offered `Direction::Right`,
-    /// `z` always `Direction::Left`), and the neighbor-query result, when present, is
-    /// always offered the opposite direction. The two requests are sent concurrently and
-    /// each resolves a structurally different direction of this node's own table, so
-    /// neither is redundant with the other.
-    ///
-    /// When the neighbor query resolves to `None`, no request is ever sent for that
-    /// direction. That is expected, not an error, this node's corresponding direction (its
-    /// right when searching right, its left when searching left, i.e. when
-    /// this node is becoming the new largest or smallest node reachable from
-    /// `introducer`, respectively) is simply left unresolved for now, to be healed
-    /// later by background repair, which is out of this method's scope. The search's
-    /// own result always resolves, since the graph is non-empty by construction.
-    /// Every `SetLinkOp` reply this method waits on is applied to this node's own
-    /// table by `handle_set_link_response`, not by this method.
+    /// The search always resolves, since the graph is non-empty. The resolved node is
+    /// then queried, on the same direction, for its own neighbor there, which gives
+    /// the opposite-direction node. Both link requests are sent concurrently, since
+    /// they resolve different directions of this node's table. A missing neighbor
+    /// leaves that direction unresolved for background repair to heal later, not an
+    /// error. Replies are applied to this node's table by `handle_set_link_response`,
+    /// not by this method.
     ///
     /// # Args
     ///
