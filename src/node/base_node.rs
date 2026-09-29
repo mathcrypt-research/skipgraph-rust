@@ -439,6 +439,7 @@ impl BaseNode {
         };
         let query_direction = search_direction.opposite();
 
+        // The search must point from the introducer toward this node, or the first hop is invalid.
         let search_result = self
             .send_search_by_id_req(
                 introducer,
@@ -2597,5 +2598,38 @@ mod tests {
         .expect("test timed out");
 
         join_result.expect_err("a search result equal to this node's own id must abort the join");
+    }
+
+    /// When `introducer` holds this node's own id, `join_stage1_link_level0` returns an
+    /// error before it sends any request, since no search direction fits.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_rejects_introducer_with_own_id() {
+        let node_id = random_identifier();
+        let span = span_fixture();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            random_membership_vector(),
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            node.join_stage1_link_level0(node_id, 0, Duration::from_secs(1)),
+        )
+        .await
+        .expect("test timed out")
+        .expect_err("an introducer holding this node's own id must abort the join");
     }
 }
