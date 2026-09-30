@@ -2793,10 +2793,9 @@ mod tests {
         );
     }
 
-    /// With `introducer.id() < u.id()` (the search-right branch), when `s`'s
-    /// neighbor query resolves `z` as `None`, `join_stage1_link_level0` never sends a
-    /// second `GetLinkOp` and resolves once the single `s`-side request is applied,
-    /// leaving this node's right-side table entry unset.
+    /// The search returns `s`, the closest node below this node's id, and `s` has no right
+    /// neighbor `z`. The join must send only one link request, to `s`, and finish once `s`
+    /// replies. This node's left entry then holds `s`, and its right entry stays empty.
     #[tokio::test]
     async fn test_join_stage1_link_level0_no_right_neighbor_sends_single_link_request() {
         let node_id = random_identifier();
@@ -2857,7 +2856,8 @@ mod tests {
                         }
                         GetLinkOp(req) => {
                             assert_eq!(
-                                dest, s_id,
+                                dest,
+                                s_id,
                                 "no z was ever known, so no second link request should be sent"
                             );
                             *link_count_mock.lock().expect("mutex poisoned") += 1;
