@@ -7,18 +7,15 @@ use crate::core::testutil::fixtures::{
     random_membership_vector, span_fixture,
 };
 use crate::core::{
-    ArrayLookupTable, IdSearchReq, Identifier, LookupTable, LookupTableMock, MembershipVector,
-    LOOKUP_TABLE_LEVELS,
+    ArrayLookupTable, IdSearchReq, Identifier, LinkOutcome, LookupTable, LookupTableMock,
+    MembershipVector, RelinkOutcome, LOOKUP_TABLE_LEVELS,
 };
 use crate::node::core::{BaseCore, Core};
+use crate::node::testutil::make_core;
 use anyhow::anyhow;
 use rand::Rng;
 use std::sync::Arc;
 use unimock::*;
-
-fn make_core(id: Identifier, lt: Box<dyn LookupTable>) -> BaseCore {
-    BaseCore::new(span_fixture(), id, random_membership_vector(), lt)
-}
 
 /// Verifies `search_by_id` returns the core's own identifier when the lookup
 /// table is empty.
@@ -424,4 +421,64 @@ fn test_prefix_match() {
     assert!(core.prefix_match(mv_ones, common));
     // false case: required level exceeds the actual common-prefix length.
     assert!(!core.prefix_match(mv_ones, common + 1));
+}
+
+/// Verifies `Core::try_link` delegates to the lookup table: an empty slot is
+/// linked directly and the write is visible through the table.
+#[test]
+fn test_try_link_empty_slot() {
+    let lt = ArrayLookupTable::new();
+    let core = make_core(random_identifier(), Box::new(lt.clone()));
+    let candidate = random_identity();
+
+    let outcome = core
+        .try_link(0, Direction::Left, candidate)
+        .expect("try_link failed");
+
+    assert_eq!(outcome, LinkOutcome::LinkedDirectly);
+    assert_eq!(lt.get_entry(0, Direction::Left).unwrap(), Some(candidate));
+}
+
+/// Verifies `Core::try_relink` delegates to the lookup table: a slot already
+/// holding the claimant is reported as consistent and left untouched.
+#[test]
+fn test_try_relink_already_consistent() {
+    let lt = ArrayLookupTable::new();
+    let claimant = random_identity();
+    lt.update_entry(claimant, 0, Direction::Right)
+        .expect("failed to update entry in lookup table");
+    let core = make_core(random_identifier(), Box::new(lt.clone()));
+
+    let outcome = core
+        .try_relink(0, Direction::Right, claimant)
+        .expect("try_relink failed");
+
+    assert_eq!(outcome, RelinkOutcome::AlreadyConsistent);
+    assert_eq!(lt.get_entry(0, Direction::Right).unwrap(), Some(claimant));
+}
+
+/// Verifies `Core::try_link` propagates the lookup table's out-of-range-level error.
+#[test]
+fn test_try_link_out_of_range_level() {
+    let core = make_core(random_identifier(), Box::new(ArrayLookupTable::new()));
+
+    let result = core.try_link(LOOKUP_TABLE_LEVELS, Direction::Left, random_identity());
+
+    assert!(
+        result.is_err(),
+        "expected an error but got a success result"
+    );
+}
+
+/// Verifies `Core::try_relink` propagates the lookup table's out-of-range-level error.
+#[test]
+fn test_try_relink_out_of_range_level() {
+    let core = make_core(random_identifier(), Box::new(ArrayLookupTable::new()));
+
+    let result = core.try_relink(LOOKUP_TABLE_LEVELS, Direction::Left, random_identity());
+
+    assert!(
+        result.is_err(),
+        "expected an error but got a success result"
+    );
 }
