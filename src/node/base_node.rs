@@ -914,7 +914,7 @@ mod tests {
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
-    use crate::node::testutil::{make_core, sorted_nodes_fixture};
+    use crate::node::testutil::{make_core, poll_until_some, sorted_nodes_fixture};
     use unimock::*;
 
     /// builds a `BaseNode` over `mock_net`, factoring out repeated core/node construction.
@@ -2129,14 +2129,12 @@ mod tests {
         let deliver = async {
             // block until both requests are on the wire, in either order, so neither reply
             // can be delivered before its own waiter is registered.
-            let (search_nonce, max_level_nonce) = loop {
+            let (search_nonce, max_level_nonce) = poll_until_some(|| {
                 let s = *search_nonce_cell.lock().expect("mutex poisoned");
                 let m = *max_level_nonce_cell.lock().expect("mutex poisoned");
-                if let (Some(s), Some(m)) = (s, m) {
-                    break (s, m);
-                }
-                tokio::task::yield_now().await;
-            };
+                s.zip(m)
+            })
+            .await;
             node.process_incoming_event(
                 introducer,
                 RetMaxLevelOp(MaxLevelRes {
@@ -2280,20 +2278,18 @@ mod tests {
         // deterministic wait for registration: poll the shared map itself rather than
         // just the nonce capture, so this actually confirms what `WaiterGuard` is about
         // to clean up is present.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_until_some(|| {
                 let registered = nonce_cell.lock().expect("mutex poisoned").is_some()
                     && !node
                         .request_id_map
                         .lock()
                         .expect("mutex poisoned")
                         .is_empty();
-                if registered {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+                registered.then_some(())
+            }),
+        )
         .await
         .expect("test timed out waiting for the waiter to register");
 
@@ -2302,19 +2298,16 @@ mod tests {
         // aborting doesn't run the cancelled future's drop glue synchronously; it runs
         // the next time the runtime polls the task. bounded poll, not a wall-clock
         // sleep, per this project's timeout-every-async-wait rule.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if node
-                    .request_id_map
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_until_some(|| {
+                node.request_id_map
                     .lock()
                     .expect("mutex poisoned")
                     .is_empty()
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+                    .then_some(())
+            }),
+        )
         .await
         .expect("test timed out waiting for the waiter map entry to be cleaned up after abort");
 
@@ -2428,12 +2421,8 @@ mod tests {
         let node_reply = node.clone();
 
         let deliver = async {
-            let search_nonce = loop {
-                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
-                    break n;
-                }
-                tokio::task::yield_now().await;
-            };
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
             node_reply
                 .process_incoming_event(
                     introducer,
@@ -2446,12 +2435,8 @@ mod tests {
                 )
                 .expect("failed to process search reply");
 
-            let neighbor_nonce = loop {
-                if let Some(n) = *neighbor_nonce_cell.lock().expect("mutex poisoned") {
-                    break n;
-                }
-                tokio::task::yield_now().await;
-            };
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
             node_reply
                 .process_incoming_event(
                     s_id,
@@ -2464,14 +2449,12 @@ mod tests {
                 )
                 .expect("failed to process neighbor reply");
 
-            let (s_link_nonce, z_link_nonce) = loop {
+            let (s_link_nonce, z_link_nonce) = poll_until_some(|| {
                 let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
                 let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
-                if let (Some(s), Some(z)) = (s, z) {
-                    break (s, z);
-                }
-                tokio::task::yield_now().await;
-            };
+                s.zip(z)
+            })
+            .await;
             node_reply
                 .process_incoming_event(
                     s_id,
@@ -2569,12 +2552,8 @@ mod tests {
         let node_reply = node.clone();
 
         let deliver = async {
-            let search_nonce = loop {
-                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
-                    break n;
-                }
-                tokio::task::yield_now().await;
-            };
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
             node_reply
                 .process_incoming_event(
                     introducer,
@@ -2729,12 +2708,8 @@ mod tests {
         let node_reply = node.clone();
 
         let deliver = async {
-            let search_nonce = loop {
-                if let Some(n) = *search_nonce_cell.lock().expect("mutex poisoned") {
-                    break n;
-                }
-                tokio::task::yield_now().await;
-            };
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
             node_reply
                 .process_incoming_event(
                     introducer,
@@ -2747,12 +2722,8 @@ mod tests {
                 )
                 .expect("failed to process search reply");
 
-            let neighbor_nonce = loop {
-                if let Some(n) = *neighbor_nonce_cell.lock().expect("mutex poisoned") {
-                    break n;
-                }
-                tokio::task::yield_now().await;
-            };
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
             node_reply
                 .process_incoming_event(
                     introducer,
@@ -2765,14 +2736,12 @@ mod tests {
                 )
                 .expect("failed to process neighbor reply");
 
-            let (s_link_nonce, z_link_nonce) = loop {
+            let (s_link_nonce, z_link_nonce) = poll_until_some(|| {
                 let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
                 let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
-                if let (Some(s), Some(z)) = (s, z) {
-                    break (s, z);
-                }
-                tokio::task::yield_now().await;
-            };
+                s.zip(z)
+            })
+            .await;
             node_reply
                 .process_incoming_event(
                     introducer,
