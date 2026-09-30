@@ -2633,13 +2633,12 @@ mod tests {
         .expect_err("an introducer holding this node's own id must abort the join");
     }
 
-    /// The one-node-graph edge case, with `introducer.id() < u.id()` (the
-    /// search-right branch), where `introducer`'s own reply names `introducer`
-    /// itself as `s` (the existing `search_by_id` fallback, exercised unmodified).
-    /// `join_stage1_link_level0` needs no special-casing for this and completes exactly as it
-    /// would for a distinct `s`.
+    /// The introducer is itself `s`, the closest node below this node's id. Its search finds
+    /// no closer node, so it replies with its own id. The join must still link this node
+    /// between the introducer and the introducer's right neighbor `z`, exactly as it does
+    /// when `s` is a different node.
     #[tokio::test]
-    async fn test_join_stage1_link_level0_one_node_graph_edge_case() {
+    async fn test_join_stage1_link_level0_introducer_is_the_closest() {
         let node_id = random_identifier();
         let mem_vec = random_membership_vector();
         let address = random_address();
