@@ -3,6 +3,8 @@ pub const IDENTIFIER_SIZE_BYTES: usize = 32;
 
 pub mod address;
 pub mod direction;
+#[cfg(test)]
+mod direction_test;
 pub mod identifier;
 pub mod identity;
 pub(crate) mod join;

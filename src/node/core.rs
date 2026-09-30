@@ -1,6 +1,7 @@
 use crate::core::model::direction::Direction;
 use crate::core::{
-    IdSearchReq, IdSearchRes, Identifier, LookupTable, LookupTableLevel, MembershipVector,
+    IdSearchReq, IdSearchRes, Identifier, Identity, LinkOutcome, LookupTable, LookupTableLevel,
+    MembershipVector, RelinkOutcome,
 };
 use anyhow::anyhow;
 use tracing::Span;
@@ -24,22 +25,31 @@ pub trait Core: Send + Sync {
 
     /// Performs a local search for the given identifier in the lookup table
     /// in the direction and up to the level specified by the request. The
-    /// result is the closest neighbor satisfying the directional constraint,
-    /// or — if no such neighbor exists at any level — the caller's own
+    /// result is the closest neighbor satisfying the directional constraint;
+    /// if no such neighbor exists at any level, the result is the caller's own
     /// identifier at level 0 (the Aspnes & Shah fallback).
+    ///
+    /// This fallback is only sound when the caller's own id already satisfies
+    /// `req.direction`'s relation to `req.target` at the time of the call. A relayed
+    /// request always has this property by construction (each hop is only ever
+    /// reached because the previous hop's own local search selected it as a
+    /// candidate already satisfying that relation), but the very first hop of a
+    /// request seeded against an arbitrary, externally-chosen node has no such
+    /// guarantee; whoever issues that first hop is responsible for choosing
+    /// `req.direction` so the property holds there too.
     fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Performs a local search for the given membership vector.
     fn search_by_mem_vec(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Returns the highest lookup-table level at which this node has any
-    /// populated neighbor entry, on either side. Used by join bootstrap: a
+    /// populated neighbor entry, on either direction. Used by join bootstrap: a
     /// joining node asks an introducer for this value to seed its starting
     /// search level.
     ///
     /// # Returns
     ///
-    /// `0` when the lookup table has no populated entries on either side.
+    /// `0` when the lookup table has no populated entries on either direction.
     /// This is indistinguishable from a table whose only populated entry sits
     /// at level 0 itself; callers that only need a starting search level (the
     /// join-bootstrap use case) are unaffected either way.
@@ -51,6 +61,28 @@ pub trait Core: Send + Sync {
     /// peer sent.
     fn max_level(&self) -> anyhow::Result<LookupTableLevel>;
 
+    /// Returns this node's own current neighbor entry at `(level, direction)`.
+    ///
+    /// # Args
+    ///
+    /// * `level` - the lookup-table level to read.
+    /// * `direction` - which of this node's own slots to read.
+    ///
+    /// # Returns
+    ///
+    /// The neighbor at `(level, direction)`, or `None` if that slot is unpopulated.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL** — propagated from a failed read of the local
+    /// lookup table: a broken local invariant, not evidence of anything a
+    /// peer sent.
+    fn neighbor_entry(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+    ) -> anyhow::Result<Option<Identity>>;
+
     /// Reports whether this node's membership vector shares a common prefix
     /// of at least `level` bits with `candidate`'s.
     ///
@@ -59,6 +91,44 @@ pub trait Core: Send + Sync {
     /// * `candidate` - the membership vector to compare against this node's own.
     /// * `level` - the minimum required common-prefix length, in bits.
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool;
+
+    /// Decides whether `candidate` becomes this node's neighbor at `(level, direction)`. See
+    /// [`LookupTable::try_link`] for the decision rule.
+    ///
+    /// # Preconditions
+    ///
+    /// Same precondition as [`LookupTable::try_link`]: callers must ensure `candidate` actually
+    /// belongs in this node's `direction` slot before calling.
+    ///
+    /// # Errors
+    ///
+    /// **CRITICAL, INTERNAL** — propagated from a failed decision on the local
+    /// lookup table: a broken local invariant, not evidence of anything a
+    /// peer sent.
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome>;
+
+    /// Decides whether `claimant` should become, or already is, this node's neighbor at
+    /// `(level, direction)`. See [`LookupTable::try_relink`] for the decision rule.
+    ///
+    /// # Preconditions
+    ///
+    /// Same precondition as [`LookupTable::try_relink`]: callers must ensure `claimant` actually
+    /// belongs in this node's `direction` slot before calling.
+    ///
+    /// # Errors
+    ///
+    /// Same failure mode as [`Self::try_link`].
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome>;
 
     /// Shallow-clones this core. Cloned instances share the same underlying
     /// state (lookup table, etc.) via Arc.
@@ -90,7 +160,7 @@ impl BaseCore {
         mem_vec: MembershipVector,
         lt: Box<dyn LookupTable>,
     ) -> Self {
-        let span = tracing::span!(parent: &parent_span, tracing::Level::TRACE, "base_core", id = ?id, mem_vec = ?mem_vec);
+        let span = tracing::span!(parent: &parent_span, tracing::Level::DEBUG, "base_core", id = ?id, mem_vec = ?mem_vec);
         BaseCore {
             id,
             mem_vec,
@@ -207,8 +277,34 @@ impl Core for BaseCore {
         Ok(self.lt.max_populated_level().unwrap_or(0))
     }
 
+    fn neighbor_entry(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+    ) -> anyhow::Result<Option<Identity>> {
+        self.lt.get_entry(level, direction)
+    }
+
     fn prefix_match(&self, candidate: MembershipVector, level: LookupTableLevel) -> bool {
         self.mem_vec.common_prefix_bit(candidate) >= level
+    }
+
+    fn try_link(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> anyhow::Result<LinkOutcome> {
+        self.lt.try_link(level, direction, candidate)
+    }
+
+    fn try_relink(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        claimant: Identity,
+    ) -> anyhow::Result<RelinkOutcome> {
+        self.lt.try_relink(level, direction, claimant)
     }
 
     fn clone_box(&self) -> Box<dyn Core> {

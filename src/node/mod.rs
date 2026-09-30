@@ -9,4 +9,6 @@ mod repair_schedule_test;
 mod search_by_id_test;
 #[cfg(test)]
 mod skip_graph_integration_test;
+#[cfg(test)]
+pub(crate) mod testutil;
 mod waiter;

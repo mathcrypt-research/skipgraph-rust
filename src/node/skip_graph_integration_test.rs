@@ -3,7 +3,7 @@ use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use crate::core::model::search::Nonce;
 use crate::core::testutil::fixtures::{
-    join_all_with_timeout, join_with_timeout, random_membership_vector, random_sorted_identifiers,
+    join_all_with_timeout, join_with_timeout, random_address, random_sorted_identifiers,
     span_fixture,
 };
 use crate::core::{
@@ -12,7 +12,8 @@ use crate::core::{
 };
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Network;
-use crate::node::core::BaseCore;
+use crate::node::testutil::make_core;
+use std::time::Duration;
 
 struct LocalSkipGraph {
     nodes: Vec<BaseNode>,
@@ -25,9 +26,9 @@ impl LocalSkipGraph {
     /// Builds a fully wired `n`-node skip graph for testing, sharing a single
     /// `NetworkHub`. Each node gets a unique sorted identifier and a random
     /// membership vector. Lookup tables are populated inline by running
-    /// Algorithm 2 (insert/join, see `skip-graphs-paper.pdf`) — level 0 as a
+    /// Algorithm 2 (insert/join, see `arXiv:cs/0306043`) — level 0 as a
     /// doubly-linked list, higher levels linking each node to its closest
-    /// membership-vector prefix-match on either side. Sidesteps the placeholder
+    /// membership-vector prefix-match on either direction. Sidesteps the placeholder
     /// `BaseNode::join` so tests can assert against a correctly-wired graph.
     fn new(n: usize) -> anyhow::Result<Self> {
         if n == 0 {
@@ -40,10 +41,9 @@ impl LocalSkipGraph {
         let mut lts: Vec<Box<dyn LookupTable>> = Vec::with_capacity(n);
 
         for &id in &identifiers {
-            let mem_vec = random_membership_vector();
             let lt: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new());
-            let network = NetworkHub::new_mock_network(hub.clone(), id)?;
-            let core = Box::new(BaseCore::new(span_fixture(), id, mem_vec, lt.clone()));
+            let network = NetworkHub::new_mock_network(hub.clone(), id, random_address())?;
+            let core = Box::new(make_core(id, lt.clone()));
             let node = BaseNode::new(span_fixture(), core, network.clone_box())?;
             nodes.push(node);
             lts.push(lt);
@@ -180,8 +180,9 @@ fn test_skip_graph_search_by_id() {
             level: LOOKUP_TABLE_LEVELS - 1,
             direction: Direction::Right,
         };
-        let result = origin_node
-            .search_by_id(id_search_req)
+        let result = tokio::runtime::Runtime::new()
+            .expect("failed to build runtime")
+            .block_on(origin_node.search_by_id(id_search_req, Duration::from_secs(5)))
             .expect("failed to search by id");
         assert_eq!(result.result, target_id);
     });
@@ -207,8 +208,9 @@ fn test_skip_graph_search_by_id_concurrent() {
                 level: LOOKUP_TABLE_LEVELS - 1,
                 direction: Direction::Right,
             };
-            let result = origin_node
-                .search_by_id(id_search_req)
+            let result = tokio::runtime::Runtime::new()
+                .expect("failed to build runtime")
+                .block_on(origin_node.search_by_id(id_search_req, Duration::from_secs(5)))
                 .expect("failed to search by id");
             assert_eq!(result.result, target_id);
         });

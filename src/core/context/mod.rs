@@ -37,7 +37,7 @@ struct ContextInner {
 impl IrrevocableContext {
     /// Create a new root context
     pub fn new(parent_span: &Span, tag: &str) -> Self {
-        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context", tag = tag);
+        let span = tracing::span!(parent: parent_span, tracing::Level::DEBUG, "irrevocable_context", tag = tag);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -51,7 +51,7 @@ impl IrrevocableContext {
 
     /// Create a new root context that expires after `timeout` elapses.
     pub fn with_timeout(parent_span: &Span, tag: &str, timeout: std::time::Duration) -> Self {
-        let span = tracing::span!(parent: parent_span, tracing::Level::TRACE, "irrevocable_context_timeout", tag = tag);
+        let span = tracing::span!(parent: parent_span, tracing::Level::DEBUG, "irrevocable_context_timeout", tag = tag);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -65,7 +65,7 @@ impl IrrevocableContext {
 
     /// Create a child context that inherits cancellation and deadline from the parent.
     pub fn child(&self, tag: &str) -> Self {
-        let span = tracing::span!(parent: &self.inner.span, tracing::Level::TRACE, "irrevocable_context_child", tag = tag);
+        let span = tracing::span!(parent: &self.inner.span, tracing::Level::DEBUG, "irrevocable_context_child", tag = tag);
         Self {
             inner: Arc::new(ContextInner {
                 token: self.inner.token.child_token(),

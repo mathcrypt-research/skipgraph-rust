@@ -1,7 +1,7 @@
 # Concurrent Node Insertion — Protocol Design
 
-Status: design spec, not yet implemented. Target: `rust-developer`, via the `generic-rust`
-develop → review loop.
+Status: Phase 0 (bootstrap) and Phase 1 (Stage 1, level-0 linking) are implemented. Sections 3.3
+onward remain design spec. Target: `rust-developer`, via the `generic-rust` develop → review loop.
 
 Authority: Aspnes & Shah, "Skip Graphs" (`arXiv:cs/0306043`), Algorithm 2 (insert) and Algorithm 8
 (fault-tolerant / backpointer repair). All algorithm content below is restated in this repo's own
@@ -24,7 +24,7 @@ Out of scope, explicitly:
   codebase's existing `Identifier`-addressed `Network`/`Event` abstraction (`src/network/mod.rs`),
   which today is exercised only through the in-memory mock (`src/network/mock/`).
 - Retroactively re-opening stage-2 height climbing on a node that already finished joining, if a
-  stage-1 gap on one of its sides only gets filled in *after* that node's join completed. Section 5.3
+  stage-1 gap on one of its directions only gets filled in *after* that node's join completed. Section 5.3
   flags this as a known limitation and explicit follow-up, not solved here.
 
 ## 1. Background: the two-stage join algorithm (Algorithm 2)
@@ -35,9 +35,9 @@ A new node `u` joins in two stages:
   `s.key < u.key` — via a search, then asks `s` and `s`'s current right neighbor `z` to link `u` in
   between them at level 0.
 - **Stage 2 (levels `ℓ > 0`, climbing).** Using its now-confirmed level-`(ℓ-1)` neighbors, `u` asks
-  outward on each side whether that neighbor shares `u`'s membership-vector prefix through level `ℓ`.
+  outward on each direction whether that neighbor shares `u`'s membership-vector prefix through level `ℓ`.
   A match becomes `u`'s level-`ℓ` neighbor candidate; a non-match forwards the question further out.
-  `u`'s height is the last level at which *either* side still had a match.
+  `u`'s height is the last level at which *either* direction still had a match.
 
 The single mechanism that makes both stages safe under concurrency, without any distributed lock, is
 `change_neighbor` — restated precisely in Section 4. Section 5 shows, with a fully hand-traced
@@ -58,7 +58,7 @@ chain can both install the entry in its own table *and* reply directly to the or
 role `IdSearchReq::origin` plays for relayed searches today. The `nonce` is set once by the originator
 and threaded unchanged through every hop.
 
-`side`/`direction` fields are never re-interpreted hop-to-hop: `Direction::Right` always means "the
+`dir`/`direction` fields are never re-interpreted hop-to-hop: `Direction::Right` always means "the
 receiving node's own `right` slot" (nodes with larger keys), `Direction::Left` always means the
 receiving node's own `left` slot — this is a global, receiver-owned concept (matching how
 `ArrayLookupTable` already stores independent `left`/`right` vectors), not something relative to the
@@ -70,19 +70,19 @@ current hop or to the originator.
 | `RetMaxLevelOp` | `MaxLevelRes` | introducer → new node | `nonce`, `max_level: LookupTableLevel` |
 | `GetNeighborOp` | `NeighborReq` | `u` → `s` | `nonce`, `origin: Identifier`, `level`, `direction` |
 | `RetNeighborOp` | `NeighborRes` | `s` → `u` | `nonce`, `level`, `direction`, `neighbor: Option<Identity>` |
-| `GetLinkOp` | `LinkReq` | `u` → `s`/`z` (forwardable) | `nonce`, `candidate: Identity`, `side: Direction`, `level` |
-| `SetLinkOp` | `LinkRes` | terminal node → `u` (also reused as an Algorithm-8 push correction) | `nonce`, `side: Direction`, `level`, `linked: Option<Identity>` |
-| `BuddyOp` | `BuddyReq` | `u` → outward neighbor (forwardable) | `nonce`, `candidate: Identity`, `side: Direction`, `level` |
-| `CheckNeighborOp` | `CheckNeighborReq` | periodic repair probe (forwardable) | `nonce`, `claimant: Identity`, `side: Direction`, `level` |
+| `GetLinkOp` | `LinkReq` | `u` → `s`/`z` (forwardable) | `nonce`, `candidate: Identity`, `dir: Direction`, `level` |
+| `SetLinkOp` | `LinkRes` | terminal node → `u` (also reused as an Algorithm-8 push correction) | `nonce`, `dir: Direction`, `level`, `linked: Option<Identity>` |
+| `BuddyOp` | `BuddyReq` | `u` → outward neighbor (forwardable) | `nonce`, `candidate: Identity`, `dir: Direction`, `level` |
+| `CheckNeighborOp` | `CheckNeighborReq` | periodic repair probe (forwardable) | `nonce`, `claimant: Identity`, `dir: Direction`, `level` |
 
 Notes on reuse, by design, to keep the catalogue minimal:
 
 - `BuddyOp` has no dedicated response type: once a node along the chain matches `u`'s prefix, it
   simply runs the same accept-or-forward decision as `GetLinkOp` (Section 4) and the eventual
   terminal node replies with `SetLinkOp`. If the chain runs off the end of the list without a match,
-  the last node replies `SetLinkOp{ level, side, linked: None }` — a definitive "no candidate on this
-  side at this level," which `u`'s stage-2 loop treats as that side going permanently dry (Section
-  3.3).
+  the last node replies `SetLinkOp{ level, dir: opposite(dir), linked: None }`. That is a definitive
+  "no candidate on this direction at this level," which `u`'s stage-2 loop treats as that direction going
+  permanently dry (Section 3.3).
 - `CheckNeighborOp`'s "notify the newly-linked node" correction reuses `SetLinkOp` (a push, not a
   reply to a pending request — applied through the same local `try_link`/`try_relink` machinery on
   receipt, see Section 4). Its "notify the evicted node" correction reuses `CheckNeighborOp` itself,
@@ -98,7 +98,7 @@ reused **unmodified** for the Stage-1 introducer search (Section 3.2) — no cha
 
 `Core::search_by_id` and `BaseNode::search_by_id` are synchronous today, correlating one relayed
 request with one blocking channel receive. Join cannot use that pattern directly: Stage 1 has two
-independent outstanding requests in flight at once (to `s` and to `z`), and Stage 2 has two independent
+independent link requests (to `s` and to `z`) that may be outstanding together, and Stage 2 has two independent
 outstanding requests per level, for up to `LOOKUP_TABLE_LEVELS` (256) levels — spawning an OS thread per
 outstanding request does not scale, and the periodic repair task (Section 6) requires `tokio::spawn`
 regardless. The join orchestration entry point should therefore be `async`, correlating replies via
@@ -128,87 +128,124 @@ not a correctness requirement: `search_by_id`'s existing candidate-collection lo
 
 ### 3.2 Phase 1 — Stage 1, level-0 linking
 
-3. `u → introducer`: `SearchByIdRequest(IdSearchReq{ nonce, target: u.id(), origin: u.id(), level:
-   max_level, direction: Direction::Right })` — **reuses the existing search machinery unmodified**,
-   relayed exactly as today. `Direction::Right` search semantics ("greatest identifier ≤ target") is
-   exactly "largest existing node with key < `u.id()`" once `u` isn't itself in the graph yet.
-4. Terminal node replies `SearchByIdResponse(IdSearchRes{ ..., result: s_id })` directly to `u`. Call
-   the node at `s_id` — `s`.
+3. **Direction depends on where `introducer` sits relative to `u`.** `search_by_id`'s relay chain only
+   preserves its directional guarantee (each hop is only ever asked of a node already known to satisfy
+   `direction`'s relation to `target`) from the *second* hop onward, since each later hop earned that
+   guarantee by being selected as the previous hop's candidate. The very first hop, an arbitrary
+   externally-supplied `introducer`, has no such guarantee unless `u` picks `direction` so that
+   `introducer` itself already satisfies it:
+   - If `introducer.id() < u.id()`: `u → introducer`: `SearchByIdRequest(IdSearchReq{ nonce, target:
+     u.id(), origin: u.id(), level: max_level, direction: Direction::Right })`. This **reuses the
+     existing search machinery unmodified**, relayed exactly as today. `Direction::Right` search semantics
+     ("greatest identifier ≤ target") resolves `u`'s predecessor `s` directly.
+   - If `introducer.id() > u.id()`: the same request with `direction: Direction::Left` instead.
+     `Direction::Left` search semantics ("smallest identifier ≥ target") resolves `u`'s successor `z`
+     directly.
+   - `introducer.id() == u.id()` is an id collision, not a case either branch resolves. `u` returns
+     an error to its own caller and sends no request at all, rather than guessing a direction.
+
+4. Terminal node replies `SearchByIdResponse(IdSearchRes{ ..., result })` directly to `u`. The node at
+   `result` is called `s` when the search ran `Direction::Right`, or `z` when it ran `Direction::Left`.
 
    *Edge case:* if the graph currently has exactly one node (the introducer itself, with an empty
-   table), `search_by_id`'s existing fallback returns the introducer's own id — `s` = introducer. No
-   special-casing needed; Stage 1 proceeds identically.
+   table), `search_by_id`'s existing fallback returns the introducer's own id. This still needs no
+   special-casing beyond picking the right branch above: when `u.id() > introducer.id()`, that id is
+   `s`; when `u.id() < introducer.id()`, it is `z` instead, and step 5 below queries it on
+   `Direction::Left` rather than `Direction::Right`.
 
-5. `u → s`: `GetNeighborOp{ nonce, origin: u.id(), level: 0, direction: Direction::Right }`.
-6. `s → u`: `RetNeighborOp{ nonce, level: 0, direction: Direction::Right, neighbor }`, where `neighbor`
-   is `s`'s current right-neighbor entry (`Option<Identity>`), possibly `None` if `s` currently
-   believes itself the tail. Call this candidate `z` when present.
+   *Id collision:* if `result == u.id()`, another node already holds `u`'s id. This is the paper's
+   `foundOp` outcome, and the insert stops there. `u` returns an error to its own caller and sends no
+   neighbor query and no link request.
 
-7. `u` now sends **two independent, concurrent** requests:
-   - `u → s`: `GetLinkOp{ nonce, candidate: u_identity, side: Direction::Right, level: 0 }` — "install
-     me as your right neighbor," i.e. `s` becomes `u`'s left neighbor.
-   - `u → z` (only if `z` is `Some`): `GetLinkOp{ nonce, candidate: u_identity, side: Direction::Left,
-     level: 0 }` — "install me as your left neighbor," i.e. `z` becomes `u`'s right neighbor.
+5. `u` queries whichever node the search resolved, on the *same* direction the search used:
+   `u → result`: `GetNeighborOp{ nonce, origin: u.id(), level: 0, direction }` (the same `direction`
+   as step 3).
+6. `result → u`: `RetNeighborOp{ nonce, level: 0, direction, neighbor }`, where `neighbor` is
+   `result`'s own neighbor entry on that same direction (`Option<Identity>`), possibly `None` if
+   `result` currently believes it has none there. This is `z` when the search resolved `s` (queried on
+   `Direction::Right`), or `s` when the search resolved `z` (queried on `Direction::Left`).
+
+7. `u` now sends **two independent** requests. They may go out together or one after the other,
+   because correctness does not depend on their overlap. Each receiver's forwarding (Section 4) is what
+   keeps concurrent inserts safe. The two requests are:
+   - `u → result` (the node the search itself resolved in step 4, always known, unconditional):
+     `GetLinkOp{ nonce, candidate: u_identity, dir: direction, level: 0 }`, offering `u` for
+     `result`'s slot on the search's own direction. When the search ran `Direction::Right`
+     (`result` is `s`), this offers `u` as `s`'s right neighbor, i.e. `s` becomes `u`'s left neighbor.
+     When it ran `Direction::Left` (`result` is `z`), this offers `u` as `z`'s left neighbor, i.e. `z`
+     becomes `u`'s right neighbor.
+   - `u → (the neighbor found in step 6)` (only if that neighbor is `Some`): `GetLinkOp{ nonce,
+     candidate: u_identity, dir: opposite(direction), level: 0 }`, offering `u` for that neighbor's
+     slot on the direction opposite the search direction. When `direction` was `Right`, this is `u → z`,
+     offering `u` as `z`'s left neighbor, i.e. `z` becomes `u`'s right neighbor. When `direction` was
+     `Left`, this is `u → s`, offering `u` as `s`'s right neighbor, i.e. `s` becomes `u`'s left
+     neighbor.
 
    **Important asymmetry, stated explicitly because it is easy to get wrong:** the `s`-chain can only
    ever resolve `u`'s **left** neighbor (every hop it takes fills someone's `right` slot with `u`), and
    the `z`-chain can only ever resolve `u`'s **right** neighbor (every hop fills someone's `left` slot).
-   They are not redundant attempts at the same slot; they resolve `u`'s two sides independently, and
-   forwarding within *each* chain (Section 4) only protects against concurrent inserts landing within
-   *that* chain's span — it does not cross over to fix the other side.
+   This holds regardless of which chain the search itself resolved directly and which it reached via
+   the step-5 neighbor query. They are not redundant attempts at the same slot. They resolve `u`'s two
+   directions independently, and forwarding within *each* chain (Section 4) only protects against concurrent
+   inserts landing within *that* chain's span, it does not cross over to fix the other direction.
 
-   Consequently: if `z` was `None` at query time but a concurrent insert lands to `u`'s right *before*
-   or *while* `u`'s `s`-request is in flight, `u`'s right side is left **unresolved** (`None`) at the
-   end of Stage 1. This is expected, not a bug — see Section 5.3, healed by Algorithm 8.
+   Consequently: if the step-6 neighbor query resolved `None` but a concurrent insert lands on that same
+   direction *before* or *while* the other request is in flight, that direction is left **unresolved** (`None`) at
+   the end of Stage 1. This is expected, not a bug. See Section 5.3, healed by Algorithm 8.
 
 8. Each `GetLinkOp` is handled via `change_neighbor`/`try_link` (Section 4); the terminal accepting
-   node replies `SetLinkOp{ nonce, side: opposite(side), level: 0, linked: Some(accepting_node's
-   Identity) }` directly to `u`. `side` is receiver-owned (Section 2), so the
-   reply names the slot in `u`'s **own** table — the mirror of the slot `u` was just installed into —
-   hence the explicit flip, identical to the `opposite(side)` Section 6.2 writes for repair
-   corrections. `u` applies each reply to its own table via the same `try_link` primitive (Section 4) — there
-   is exactly one code path in this design that ever writes a lookup-table entry, whether the write is
-   `u` installing its own neighbor, a peer installing `u`, or a repair correction (Section 6).
+   node replies `SetLinkOp{ nonce, dir: opposite(dir), level: 0, linked: Some(accepting_node's
+   Identity) }` directly to `u`. `dir` is receiver-owned (Section 2), so the
+   reply names the slot in `u`'s **own** table, the mirror of the slot `u` was just installed into,
+   hence the explicit flip, identical to the `opposite(dir)` Section 6.2 writes for repair
+   corrections. `u` applies each reply to its own table via the same `try_link` primitive (Section 4).
+   There is exactly one code path in this design that ever writes a lookup-table entry, whether the
+   write is `u` installing its own neighbor, a peer installing `u`, or a repair correction (Section 6).
 
-Stage 1 is complete once `u` has resolved both sides (received a `SetLinkOp` for the `z`-request if one
-was sent, or has recorded `None` immediately if no `z` was known) — `u` does **not** block Stage 2 on an
-unresolved side; it proceeds with whatever it has.
+Stage 1 is complete once `u` has resolved both directions (received a `SetLinkOp` for the step-6-query
+request if one was sent, or has recorded `None` immediately if no neighbor was known there). `u` does
+**not** block Stage 2 on an unresolved direction; it proceeds with whatever it has.
 
 ### 3.3 Phase 2 — Stage 2, climbing
 
 At level `ℓ`, starting `ℓ = 1`:
 
 ```
-for each side S in {Left, Right}:
+for each direction S in {Left, Right}:
     if u.neighbor[S][ℓ-1] is None:
         # already dry from an earlier level — nothing to ask, stays None forever
         continue
-    send BuddyOp{ nonce, candidate: u_identity, side: S, level: ℓ } to u.neighbor[S][ℓ-1]
+    send BuddyOp{ nonce, candidate: u_identity, dir: opposite(S), level: ℓ } to u.neighbor[S][ℓ-1]
 
-wait for a resolution on every side queried this round (SetLinkOp, Some or None)
+wait for a resolution on every direction queried this round (SetLinkOp, Some or None)
 
-if every side is None at level ℓ (both the sides queried this round resolved None,
-   and any side already dry from before remains None):
+if every direction is None at level ℓ (both the directions queried this round resolved None,
+   and any direction already dry from before remains None):
     u's climb stops; u's height = ℓ - 1
 else:
     proceed to level ℓ + 1
 ```
 
-A node `w` receiving `BuddyOp{ candidate, side, level: ℓ }`:
+A node `w` receiving `BuddyOp{ candidate, dir, level: ℓ }`:
 
 ```
 if w.mem_vec().common_prefix_bit(candidate.mem_vec()) >= ℓ:
     # w matches; runs the identical accept-or-forward decision GetLinkOp uses (Section 4),
-    # with (level=ℓ, direction=side, candidate=candidate) — NOT an automatic accept, because a
+    # with (level=ℓ, direction=dir, candidate=candidate) — NOT an automatic accept, because a
     # different concurrent insertion may already occupy that slot.
 else:
-    if w.neighbor[side][ℓ-1] is Some(next):
-        forward BuddyOp{ candidate, side, level: ℓ } to next   # walk further out, same direction
+    if w.neighbor[opposite(dir)][ℓ-1] is Some(next):
+        # walk further out, away from the candidate. dir is unchanged because it names
+        # the next hop's own slot for the candidate, not the direction the message travels
+        forward BuddyOp{ candidate, dir, level: ℓ } to next
     else:
-        reply SetLinkOp{ side, level: ℓ, linked: None } directly to candidate   # end of the line
+        reply SetLinkOp{ dir: opposite(dir), level: ℓ, linked: None } directly to candidate   # end of the line
 ```
 
-Both sides are queried **concurrently** at each level (matching Stage 1's "independently" framing),
+Both `SetLinkOp` arms carry `opposite(dir)`, so a reply always names the slot `S` in the candidate's
+own table that the loop above queried, whether the chain resolved `Some` or `None`.
+
+Both directions are queried **concurrently** at each level (matching Stage 1's "independently" framing),
 not sequentially — this affects latency, not message count.
 
 Membership vectors in this codebase are already fully materialized upfront (`MembershipVector` is a
@@ -224,25 +261,47 @@ by other nodes' `GetLinkOp`/`BuddyOp`/`CheckNeighborOp` chains, exactly like any
 its handlers must already be live and correct. `process_incoming_event` additions for the eight new
 variants are therefore stateless with respect to join progress; they always just consult the lookup
 table via `try_link`/`try_relink`. The **only** join-specific state is the outward-facing orchestration
-(Section 3.0's oneshot-correlated request tracking, and which level/side Stage 2 is currently waiting
+(Section 3.0's oneshot-correlated request tracking, and which level/direction Stage 2 is currently waiting
 on) — transient, owned by `u` alone, discarded once climbing stops.
 
 ## 4. Local atomicity: `try_link`/`try_relink`
 
 ### 4.1 `change_neighbor`, restated
 
-Run by node `v` on receiving a link-request for candidate `u` on `side` at `level` (this is what both
-`GetLinkOp` handling and a `BuddyOp` prefix match funnel into):
+Run by node `v` on receiving a link-request for candidate `u` on `dir` at `level` (this is what both
+`GetLinkOp` handling and a `BuddyOp` prefix match funnel into).
+
+**Precondition, checked before the decision.** Every field of an inbound link-request is
+peer-controlled, and `v` holds no local request to check it against. The decision below cannot catch a
+bad one, because it only ever weighs `v`'s existing entry against `u` and never against `v` itself. So
+a violated precondition installs an out-of-order or wrong-list neighbor silently. `v` therefore
+validates the request first, and drops it when any check below fails.
 
 ```
-cmp = (side == Right) ? LessThan : GreaterThan
-if v.neighbor[side][level] exists AND v.neighbor[side][level].key `cmp` u.key:
-    # v's current neighbor on that side already sits strictly between v and u — not v's job
-    forward the link-request to v.neighbor[side][level]
+if level is not a real lookup-table level                              -> drop
+if dir == Right and u.key <= v.key                                     -> drop
+if dir == Left  and u.key >= v.key                                     -> drop
+if v.mem_vec().common_prefix_bit(u.mem_vec()) < level                  -> drop
+```
+
+A drop is logged locally and answered with nothing, because a failure here means a malformed or
+adversarial peer rather than a broken local invariant of `v`. No legitimate request is ever dropped. A
+forwarded link-request keeps every one of these properties. The hop it forwards to sits strictly
+between `v` and `u`, so `u` stays beyond that hop on `dir`, and every node in one level-`level` list
+shares that list's prefix. The last check is the same prefix rule Section 3 states for `BuddyOp`, and
+it binds on `GetLinkOp` for the same reason.
+
+The decision `v` then runs:
+
+```
+cmp = (dir == Right) ? LessThan : GreaterThan
+if v.neighbor[dir][level] exists AND v.neighbor[dir][level].key `cmp` u.key:
+    # v's current neighbor on that direction already sits strictly between v and u — not v's job
+    forward the link-request to v.neighbor[dir][level]
 else:
-    v.neighbor[side][level] = u
-    reply to u confirming the link (SetLinkOp{ side: opposite(side), level, linked: v's identity })
-        # side is receiver-owned (Section 2): the reply names u's own slot, the mirror of the
+    v.neighbor[dir][level] = u
+    reply to u confirming the link (SetLinkOp{ dir: opposite(dir), level, linked: v's identity })
+        # dir is receiver-owned (Section 2). the reply names u's own slot, the mirror of the
         # slot u was installed into here — same flip Section 6.2 writes for repair corrections
 ```
 
@@ -304,7 +363,7 @@ logic (inside one write-lock critical section):
         return AlreadyConsistent
     Some(existing) where existing.id() `cmp` claimant.id() =>
         return Forward(existing)                          # table NOT modified
-    other =>                                                # None, or existing on the far side of claimant
+    other =>                                                # None, or existing on the far direction of claimant
         evicted = other
         set entry at (level, direction) = Some(claimant)
         return Relinked{ evicted }
@@ -329,7 +388,7 @@ correction — funnels through `try_link` or `try_relink`. There is no second, u
 ### 5.1 Why `change_neighbor` alone is not enough
 
 `change_neighbor`'s forwarding proof gives *ordering*: a node's pointers always point to something on
-the correct side of it. It says nothing about whether the pointer on the *other end* points back. Two
+the correct direction of it. It says nothing about whether the pointer on the *other end* points back. Two
 concurrent, non-conflicting-looking insertions can each correctly maintain ordering at every step and
 still leave the graph split into two connected fragments that never got stitched to each other.
 
@@ -339,8 +398,8 @@ Four nodes, `A < B < C < D`. `A` and `D` are already linked: `A.right[0] = D`, `
 `C` join concurrently. Both search before either has linked in, so both independently discover `A` as
 `s` and `D` as `z` (Section 3.2 steps 3–6). Both send their two `GetLinkOp`s (step 7):
 
-- `B → A`: `GetLinkOp{ candidate: B, side: Right, level: 0 }`; `B → D`: `GetLinkOp{ candidate: B, side: Left, level: 0 }`.
-- `C → A`: `GetLinkOp{ candidate: C, side: Right, level: 0 }`; `C → D`: `GetLinkOp{ candidate: C, side: Left, level: 0 }`.
+- `B → A`: `GetLinkOp{ candidate: B, dir: Right, level: 0 }`; `B → D`: `GetLinkOp{ candidate: B, dir: Left, level: 0 }`.
+- `C → A`: `GetLinkOp{ candidate: C, dir: Right, level: 0 }`; `C → D`: `GetLinkOp{ candidate: C, dir: Left, level: 0 }`.
 
 **At `A`, `C`'s request is processed before `B`'s:**
 
@@ -376,17 +435,17 @@ what the required regression test (Section 7) reproduces.
 ### 5.3 A second gap category: a stale `RetNeighborOp` snapshot
 
 Section 3.2's asymmetry note already flags this: if `z` (from `RetNeighborOp`) is `None` or stale at
-the moment `u` samples it, but a third node concurrently links in on that side, `u`'s Stage 1 can finish
-with a `None`/wrong entry on that side that neither of `u`'s two `GetLinkOp` chains can structurally
-correct (the `s`-chain only ever resolves `u`'s left side; the `z`-chain only ever resolves the right).
+the moment `u` samples it, but a third node concurrently links in on that direction, `u`'s Stage 1 can finish
+with a `None`/wrong entry on that direction that neither of `u`'s two `GetLinkOp` chains can structurally
+correct (the `s`-chain only ever resolves `u`'s left direction; the `z`-chain only ever resolves the right).
 This is a different root cause from Section 5.2's clobber but the same shape of defect — a missing or
 stale reverse pointer — and it heals through the identical Algorithm 8 mechanism (Section 6), via the
 *other* node's own periodic sweep eventually discovering the mismatch and correcting it, without `u`
 needing to have gotten it right initially.
 
-Known limitation, explicitly out of scope here: if `u`'s stage-2 height climb on that side has already
+Known limitation, explicitly out of scope here: if `u`'s stage-2 height climb on that direction has already
 terminated (recorded permanent `None`) by the time Algorithm 8 fills in the level-0 gap, `u` does not
-retroactively reopen climbing on that side. Flagged as follow-up work, not solved by this design.
+retroactively reopen climbing on that direction. Flagged as follow-up work, not solved by this design.
 
 ## 6. Algorithm 8 — continuous backpointer repair
 
@@ -404,9 +463,9 @@ via the existing `LookupTable::left_neighbors()`/`right_neighbors()`, no new enu
 
 ```
 for (level, w) in v.left_neighbors():
-    send CheckNeighborOp{ claimant: v_identity, side: Right, level } to w   # "is your Right slot me?"
+    send CheckNeighborOp{ claimant: v_identity, dir: Right, level } to w   # "is your Right slot me?"
 for (level, w) in v.right_neighbors():
-    send CheckNeighborOp{ claimant: v_identity, side: Left, level } to w    # "is your Left slot me?"
+    send CheckNeighborOp{ claimant: v_identity, dir: Left, level } to w    # "is your Left slot me?"
 ```
 
 The check is unconditional and embodied entirely in the round trip — `v` does not attempt to
@@ -415,25 +474,25 @@ determines whether anything was actually wrong.
 
 ### 6.2 `check_neighbor`, restated precisely
 
-Run by node `w` on receiving `CheckNeighborOp{ claimant, side, level }` (structurally the same
+Run by node `w` on receiving `CheckNeighborOp{ claimant, dir, level }` (structurally the same
 accept-or-forward shape as `change_neighbor`, backed by `try_relink` instead of `try_link`):
 
 ```
-cmp = (side == Right) ? LessThan : GreaterThan
-match w.neighbor[side][level]:
+cmp = (dir == Right) ? LessThan : GreaterThan
+match w.neighbor[dir][level]:
     Some(existing) where existing == claimant:
         # already consistent — nothing to do, no message sent
     Some(existing) where existing.key `cmp` claimant.key:
         # existing sits strictly between w and claimant — not w's job, walk outward
-        forward CheckNeighborOp{ claimant, side, level } to existing
-    other:  # None, or existing is on the far side of claimant (claimant is actually closer to w)
+        forward CheckNeighborOp{ claimant, dir, level } to existing
+    other:  # None, or existing is on the far direction of claimant (claimant is actually closer to w)
         evicted = other
-        w.neighbor[side][level] = claimant          # relink, via try_relink's Relinked{evicted} arm
+        w.neighbor[dir][level] = claimant          # relink, via try_relink's Relinked{evicted} arm
         # fire two correction messages:
-        send SetLinkOp{ side: opposite(side), level, linked: Some(w's identity) } to claimant
+        send SetLinkOp{ dir: opposite(dir), level, linked: Some(w's identity) } to claimant
             # tells claimant its reciprocal pointer should be w — applied at claimant via try_link
         if evicted is Some(old):
-            send CheckNeighborOp{ claimant: w's identity, side: opposite(side), level } to old
+            send CheckNeighborOp{ claimant: w's identity, dir: opposite(dir), level } to old
                 # re-probes the evicted node's relationship to w using the identical mechanism,
                 # recursively — no third message type needed
 ```
@@ -446,16 +505,16 @@ three branches above, each a single write-lock critical section.
 Continuing Section 5.2's end state. Say `B`'s own periodic sweep runs first (the paper's guarantee
 holds regardless of which of `B` or `C` triggers first):
 
-- `B`'s sweep on its `right[0] = D` entry sends `CheckNeighborOp{ claimant: B, side: Left, level: 0 }`
+- `B`'s sweep on its `right[0] = D` entry sends `CheckNeighborOp{ claimant: B, dir: Left, level: 0 }`
   to `D` ("is your left neighbor me?").
 - **At `D`:** `D.left[0] = C`. `cmp = GreaterThan`; is `C > B`? Yes → `C` sits strictly between `D` and
   `B` → forward to `C`.
-- **At `C`:** same probe, unchanged (`claimant: B, side: Left, level: 0`). `C.left[0] = A`. Is `A > B`?
+- **At `C`:** same probe, unchanged (`claimant: B, dir: Left, level: 0`). `C.left[0] = A`. Is `A > B`?
   No (`A < B`) → not strictly between → **relink**: `C.left[0] = B` (`C`'s stale pointer is now fixed).
   Evicted = `A`. Fires:
-  - `SetLinkOp{ side: Right, level: 0, linked: C }` → `B`. `B` applies it: `B.right[0] = C` (`B`'s
+  - `SetLinkOp{ dir: Right, level: 0, linked: C }` → `B`. `B` applies it: `B.right[0] = C` (`B`'s
     stale pointer is now fixed — **both stale pointers healed after this single triggering sweep**).
-  - `CheckNeighborOp{ claimant: C, side: Right, level: 0 }` → `A` (the evicted node). At `A`:
+  - `CheckNeighborOp{ claimant: C, dir: Right, level: 0 }` → `A` (the evicted node). At `A`:
     `A.right[0] = B` already; `cmp = LessThan`; is `B < C`? Yes → forward to `B`. At `B`:
     `B.right[0]` is now `C` (just fixed above) → already matches claimant `C` → no-op. Converges, no
     further messages.
@@ -501,10 +560,10 @@ levels are irrelevant to this scenario and can stay empty.
 **Adversarial ordering (drive this by calling each node's message-handling entry point directly, in
 this exact sequence, from a single test thread — not via `std::thread::spawn`):**
 
-1. Deliver `C`'s `GetLinkOp{ candidate: C, side: Right, level: 0 }` to `A`.
-2. Deliver `B`'s `GetLinkOp{ candidate: B, side: Right, level: 0 }` to `A`.
-3. Deliver `B`'s `GetLinkOp{ candidate: B, side: Left, level: 0 }` to `D`.
-4. Deliver `C`'s `GetLinkOp{ candidate: C, side: Left, level: 0 }` to `D`.
+1. Deliver `C`'s `GetLinkOp{ candidate: C, dir: Right, level: 0 }` to `A`.
+2. Deliver `B`'s `GetLinkOp{ candidate: B, dir: Right, level: 0 }` to `A`.
+3. Deliver `B`'s `GetLinkOp{ candidate: B, dir: Left, level: 0 }` to `D`.
+4. Deliver `C`'s `GetLinkOp{ candidate: C, dir: Left, level: 0 }` to `D`.
 5. Apply each resulting `SetLinkOp` reply to the requester's own table (either by feeding it through
    the requester's own handler, or, equivalently, by directly recording the known reply value — the
    point under test is the receiver-side `A`/`D` behavior, not the requester-side apply step).

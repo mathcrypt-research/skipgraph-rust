@@ -2,7 +2,7 @@ pub mod mock;
 mod processor;
 
 use crate::core::{
-    BuddyReq, CheckNeighborReq, IdSearchReq, IdSearchRes, Identifier, LinkReq, LinkRes,
+    Address, BuddyReq, CheckNeighborReq, IdSearchReq, IdSearchRes, Identifier, LinkReq, LinkRes,
     MaxLevelReq, MaxLevelRes, NeighborReq, NeighborRes,
 };
 #[allow(unused)]
@@ -26,7 +26,7 @@ pub enum Event {
     GetNeighborOp(NeighborReq),
     /// the response carrying the queried neighbor entry, if any.
     RetNeighborOp(NeighborRes),
-    /// a forwardable request to link the candidate at the receiver's given side and level.
+    /// a forwardable request to link the candidate at the receiver's given direction and level.
     GetLinkOp(LinkReq),
     /// a link confirmation reply; also reused as a repair push correction.
     SetLinkOp(LinkRes),
@@ -52,6 +52,9 @@ pub trait EventProcessorCore: Send + Sync {
 /// Network trait defines the interface for a network service that can send and receive events.
 #[unimock::unimock(api=NetworkMock)]
 pub trait Network: Send + Sync {
+    /// Returns this node's own network address.
+    fn address(&self) -> Address;
+
     /// Sends an event to the network.
     fn send_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()>;
 

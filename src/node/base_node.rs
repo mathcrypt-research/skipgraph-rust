@@ -1,9 +1,13 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel, MaxLevelReq,
-    MaxLevelRes, MembershipVector,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext, LinkOutcome,
+    LinkReq, LinkRes, LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq,
+    NeighborRes, LOOKUP_TABLE_LEVELS,
 };
-use crate::network::Event::{GetMaxLevelOp, RetMaxLevelOp, SearchByIdRequest, SearchByIdResponse};
+use crate::network::Event::{
+    GetLinkOp, GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
+    SearchByIdResponse, SetLinkOp,
+};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
 use crate::network::{Event, EventProcessorCore, Network};
@@ -13,11 +17,10 @@ use anyhow::anyhow;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Formatter;
-use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{Instrument, Span};
+use tracing::Span;
 
 /// `BaseNode` is the network-aware orchestrator for a single skip-graph node.
 ///
@@ -47,7 +50,7 @@ impl BaseNode {
         net: Box<dyn Network>,
     ) -> anyhow::Result<Self> {
         let clone_net = net.clone();
-        let span = tracing::span!(parent: &parent_span, tracing::Level::TRACE, "base_node", id = ?core.id(), mem_vec = ?core.mem_vec());
+        let span = tracing::span!(parent: &parent_span, tracing::Level::DEBUG, "base_node", id = ?core.id(), mem_vec = ?core.mem_vec());
         let _enter = span.enter();
 
         let ctx = IrrevocableContext::new(&span, "base_node_context");
@@ -82,10 +85,18 @@ impl BaseNode {
         self.core.mem_vec()
     }
 
-    pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
-        let span = tracing::trace_span!("search_by_id", target = ?req.target, level = ?req.level);
-        let _enter = span.enter();
+    /// Returns this node's own full identity. Lives on `BaseNode`, not `Core`, since
+    /// `Core` knows nothing about the network and has no address to contribute.
+    fn self_identity(&self) -> Identity {
+        Identity::new(self.core.id(), self.core.mem_vec(), self.net.address())
+    }
 
+    #[tracing::instrument(level = "trace", parent = &self.span, fields(target = ?req.target, level = ?req.level), skip(self, req, timeout))]
+    pub(crate) async fn search_by_id(
+        &self,
+        req: IdSearchReq,
+        timeout: Duration,
+    ) -> anyhow::Result<IdSearchRes> {
         tracing::trace!("searching for target {:?}", req.target);
         let local_res = self
             .core
@@ -96,49 +107,15 @@ impl BaseNode {
             return Ok(local_res);
         }
 
-        let (tx, rx) = sync_channel::<IdSearchRes>(1);
-        {
-            let mut request_id_map = self
-                .request_id_map
-                .lock()
-                .expect("mutex was poisoned by a previous panic");
-            request_id_map.insert(req.nonce, Waiter::Search(tx));
-        }
-        let relay_request = SearchByIdRequest(IdSearchReq {
-            nonce: req.nonce,
-            target: req.target,
-            origin: self.core.id(),
-            level: local_res.termination_level,
-            direction: req.direction,
-        });
-
-        if let Err(e) = self.net.send_event(local_res.result, relay_request) {
-            self.request_id_map
-                .lock()
-                .expect("mutex was poisoned by a previous panic")
-                .remove(&req.nonce);
-            return Err(anyhow!("failed to perform search by id {}", e));
-        }
-        tracing::info!("relayed search by id request to the next node, pending response");
-        match rx.recv() {
-            Ok(net_result) => {
-                tracing::info!(
-                    "received network response for search by id {:?}: {:?}",
-                    req.target,
-                    net_result.result
-                );
-                Ok(net_result)
-            }
-            Err(_) => {
-                self.request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic")
-                    .remove(&req.nonce);
-                Err(anyhow!(
-                    "failed to receive network response for search by id"
-                ))
-            }
-        }
+        self.send_search_by_id_req(
+            local_res.result,
+            req.nonce,
+            req.target,
+            local_res.termination_level,
+            req.direction,
+            timeout,
+        )
+        .await
     }
 
     /// Asks `introducer` for the highest lookup-table level at which it has any
@@ -164,173 +141,727 @@ impl BaseNode {
     ///   seeded level.
     /// * **RECOVERABLE** — the reply channel is dropped before a reply arrives.
     /// * **RECOVERABLE** — `timeout` elapses before a reply arrives.
+    #[tracing::instrument(level = "trace", parent = &self.span, fields(introducer = ?introducer), skip(self, timeout))]
     pub(crate) async fn get_max_level(
         &self,
         introducer: Identifier,
         timeout: Duration,
     ) -> anyhow::Result<LookupTableLevel> {
-        let span = tracing::trace_span!("get_max_level", introducer = ?introducer);
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<MaxLevelRes>();
 
-        // Attach the span via `.instrument()` rather than holding an `enter()` guard
-        // across the `.await` below: the guard is `!Send` and would stay entered while
-        // the future is suspended, leaking the span onto whatever unrelated work the
-        // executor polls on this thread in the meantime.
-        async move {
-            let nonce = Nonce::random();
-            let (tx, rx) = oneshot::channel::<MaxLevelRes>();
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::MaxLevel(tx));
+        }
+        // cleans up the map entry on every exit path, including cancellation. Never read
+        // (its only job is running `Drop` at end of scope), hence the `_` prefix.
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
 
-            {
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                request_id_map.insert(nonce, Waiter::MaxLevel(tx));
+        if let Err(e) = self.net.send_event(
+            introducer,
+            GetMaxLevelOp(MaxLevelReq {
+                nonce,
+                origin: self.core.id(),
+            }),
+        ) {
+            return Err(anyhow!("failed to send get max level request: {}", e));
+        }
+        tracing::info!("sent get max level request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => {
+                tracing::info!("received max level response: {:?}", res.max_level);
+                Ok(res.max_level)
             }
-            // cleans up the map entry on every exit path, including cancellation. Never read
-            // (its only job is running `Drop` at end of scope), hence the `_` prefix.
-            let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive network response for get max level: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get max level response")),
+        }
+    }
 
-            if let Err(e) = self.net.send_event(
-                introducer,
-                GetMaxLevelOp(MaxLevelReq {
+    /// Sends the request to `dest` and waits for the terminal node's reply, skipping this
+    /// node's own local search. `dest` must not be past `target` in `direction`, so
+    /// `dest <= target` for `Right` and `dest >= target` for `Left`. A node with no better
+    /// neighbor answers with its own identifier, which is valid only under that condition.
+    /// Each relay hop preserves it, so the caller guarantees it for the first hop only.
+    ///
+    /// # Returns
+    ///
+    /// The terminal node's response.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Send failure, dropped reply channel, or `timeout`.
+    #[tracing::instrument(level = "trace", parent = &self.span, skip(self))]
+    async fn send_search_by_id_req(
+        &self,
+        dest: Identifier,
+        nonce: Nonce,
+        target: Identifier,
+        level: LookupTableLevel,
+        direction: Direction,
+        timeout: Duration,
+    ) -> anyhow::Result<IdSearchRes> {
+        let (tx, rx) = oneshot::channel::<IdSearchRes>();
+        self.request_id_map
+            .lock()
+            .expect("mutex was poisoned by a previous panic")
+            .insert(nonce, Waiter::AsyncSearch(tx));
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        let req = IdSearchReq {
+            nonce,
+            target,
+            origin: self.core.id(),
+            level,
+            direction,
+        };
+        self.net
+            .send_event(dest, SearchByIdRequest(req))
+            .map_err(|e| anyhow!("failed to send search by id request: {}", e))?;
+        tracing::info!("sent search by id request, pending response");
+
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| anyhow!("timed out waiting for search by id response"))?
+            .map_err(|_| anyhow!("failed to receive search by id response: sender dropped"))
+    }
+
+    /// Asks `from` for its current neighbor entry on `direction` at `level`.
+    ///
+    /// # Args
+    ///
+    /// * `from`, the node to query.
+    /// * `direction`, which of `from`'s own slots to query.
+    /// * `level`, which lookup-table level to query.
+    /// * `timeout`, how long to wait for `from`'s reply before giving up.
+    ///
+    /// # Returns
+    ///
+    /// `from`'s current neighbor on `direction` at `level`, or `None` if `from`
+    /// currently believes it has none there.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(from = ?from, direction = ?direction, level = ?level),
+        skip(self, timeout)
+    )]
+    pub(crate) async fn get_neighbor(
+        &self,
+        from: Identifier,
+        direction: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Identity>> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<NeighborRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(nonce, Waiter::Neighbor(tx));
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                from,
+                GetNeighborOp(NeighborReq {
                     nonce,
                     origin: self.core.id(),
+                    level,
+                    direction,
                 }),
-            ) {
-                return Err(anyhow!("failed to send get max level request: {}", e));
-            }
-            tracing::info!("sent get max level request, pending response");
+            )
+            .map_err(|e| anyhow!("failed to send get neighbor request: {}", e))?;
+        tracing::info!("sent get neighbor request, pending response");
 
-            match tokio::time::timeout(timeout, rx).await {
-                Ok(Ok(res)) => {
-                    tracing::info!("received max level response: {:?}", res.max_level);
-                    Ok(res.max_level)
-                }
-                Ok(Err(_)) => Err(anyhow!(
-                    "failed to receive network response for get max level: sender dropped"
-                )),
-                Err(_) => Err(anyhow!("timed out waiting for get max level response")),
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => Ok(res.neighbor),
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get neighbor response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get neighbor response")),
+        }
+    }
+
+    /// Sends `GetLinkOp` to `dest`, asking it to adopt this node as its neighbor
+    /// on `dir` at `level`, part of stage 1 of the join protocol.
+    ///
+    /// The resulting `SetLinkOp` reply is applied to this node's own lookup table by
+    /// `handle_set_link_response`, not by this method. By the time this method's
+    /// `await` resolves, that write has already happened, since both run on the same
+    /// synchronous event-processing path.
+    ///
+    /// # Args
+    ///
+    /// * `dest`, the node to send the link request to.
+    /// * `dir`, receiver-owned, which of `dest`'s own slots this node is
+    ///   proposed for.
+    /// * `level`, the lookup-table level at which the link is requested.
+    /// * `timeout`, how long to wait for a reply before giving up.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(dest = ?dest, dir = ?dir, level = ?level),
+        skip(self, timeout)
+    )]
+    async fn send_link_request(
+        &self,
+        dest: Identifier,
+        dir: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(
+                nonce,
+                Waiter::Link {
+                    tx,
+                    level,
+                    // the reply names this node's own slot, the mirror of the slot the
+                    // request named in the responder's table.
+                    dir: dir.opposite(),
+                },
+            );
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                dest,
+                GetLinkOp(LinkReq {
+                    nonce,
+                    candidate: self.self_identity(),
+                    dir,
+                    level,
+                }),
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "failed to send get link request to {:?} on {:?}: {}",
+                    dest,
+                    dir,
+                    e
+                )
+            })?;
+        tracing::info!("sent get link request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => {
+                tracing::info!("resolved link request: linked = {:?}", res.linked);
+                Ok(())
+            }
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get link response from {:?} on {:?}: sender dropped",
+                dest,
+                dir
+            )),
+            Err(_) => Err(anyhow!(
+                "timed out waiting for get link response from {:?} on {:?}",
+                dest,
+                dir
+            )),
+        }
+    }
+
+    /// Links this joining node to its two level-0 neighbors, one on each side of
+    /// `self.id()`.
+    ///
+    /// The search starts at `introducer` and looks toward `self.id()`. If
+    /// `introducer`'s id is smaller, the search finds the node just below `self.id()`.
+    /// If it is larger, the search finds the node just above. Then this node asks
+    /// that node for its neighbor on the other side of `self.id()`, which is the
+    /// second neighbor.
+    ///
+    /// The two link requests are independent. This method sends them together, but
+    /// correctness does not depend on their overlap. If the second neighbor does not
+    /// exist, that side stays empty and background repair fills it later. Replies
+    /// update this node's table in `handle_set_link_response`, not here.
+    ///
+    /// # Args
+    ///
+    /// * `introducer`, an already-joined node used to seed the stage-1 search.
+    /// * `max_level`, the starting lookup-table level for the stage-1 search,
+    ///   typically `introducer`'s own reply to [`Self::get_max_level`].
+    /// * `timeout`, the bound applied to every individual round trip this method
+    ///   performs.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** `introducer`'s id equals `self.id()`.
+    /// * **RECOVERABLE, INTERNAL.** The search resolves a node whose id equals
+    ///   `self.id()`, so another node already holds this id. No link request is sent.
+    /// * **RECOVERABLE, INTERNAL.** Any of the underlying round trips fails to send,
+    ///   has its reply channel dropped, or times out.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(introducer = ?introducer, max_level = ?max_level),
+        skip(self, timeout)
+    )]
+    pub(crate) async fn join_stage1_link_level0(
+        &self,
+        introducer: Identifier,
+        max_level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let own_id = self.core.id();
+        let search_direction = if introducer < own_id {
+            Direction::Right
+        } else if introducer > own_id {
+            Direction::Left
+        } else {
+            return Err(anyhow!(
+                "introducer id collides with this node's own id, cannot determine stage-1 search direction"
+            ));
+        };
+        let query_direction = search_direction.opposite();
+
+        // The search must point from the introducer toward this node, or the first hop is invalid.
+        let search_result = self
+            .send_search_by_id_req(
+                introducer,
+                Nonce::random(),
+                own_id,
+                max_level,
+                search_direction,
+                timeout,
+            )
+            .await?
+            .result;
+        if search_result == own_id {
+            return Err(anyhow!(
+                "stage-1 search resolved a node with this node's own id, another node already holds it"
+            ));
+        }
+        tracing::info!(
+            "resolved stage-1 search anchor {:?} on {:?}",
+            search_result,
+            search_direction
+        );
+
+        let query_result = self
+            .get_neighbor(search_result, search_direction, 0, timeout)
+            .await?;
+
+        let search_link = self.send_link_request(search_result, search_direction, 0, timeout);
+        match query_result {
+            Some(query_identity) => {
+                tracing::info!(
+                    "resolved stage-1 neighbor query result {:?} on {:?}",
+                    query_identity,
+                    query_direction
+                );
+                let query_link =
+                    self.send_link_request(query_identity.id(), query_direction, 0, timeout);
+                let (search_res, query_res) = tokio::join!(search_link, query_link);
+                search_res?;
+                query_res?;
+            }
+            None => {
+                tracing::info!(
+                    "no neighbor at query time on {:?}, that direction left unresolved",
+                    query_direction
+                );
+                search_link.await?;
             }
         }
-        .instrument(span)
-        .await
+
+        tracing::info!("stage-1 (level-0) join linking complete");
+        Ok(())
+    }
+
+    /// Removes and returns the `nonce`-keyed waiter, but only when the map's current
+    /// entry there matches `is_expected_variant`; a present but wrong-typed entry is
+    /// left untouched rather than destroyed, since it may belong to a different
+    /// in-flight request. Logs why, at warn level, whenever it returns `None`.
+    ///
+    /// # Args
+    ///
+    /// * `nonce` — the correlation id to look up.
+    /// * `expected` — the variant name this caller expects, named only in the warning
+    ///   logged on a mismatch.
+    /// * `is_expected_variant` — tests the map's current entry without consuming it.
+    fn take_waiter(
+        &self,
+        nonce: Nonce,
+        expected: &str,
+        is_expected_variant: impl Fn(&Waiter) -> bool,
+    ) -> Option<Waiter> {
+        let mut request_id_map = self
+            .request_id_map
+            .lock()
+            .expect("mutex was poisoned by a previous panic");
+        match request_id_map.get(&nonce) {
+            Some(w) if is_expected_variant(w) => request_id_map.remove(&nonce),
+            Some(x) => {
+                tracing::warn!(
+                    "invalid waiter in the map, expected Waiter::{}, got {:?}",
+                    expected,
+                    x
+                );
+                None
+            }
+            None => {
+                // a reply with no waiter is normal. an unsolicited `SetLinkOp` repair push has
+                // none by design, and neither has a reply that lands after its request timed out.
+                // TODO: install a counter metric here, so a rise in these stays visible without
+                // a warning log.
+                tracing::debug!("no waiter exists in the map for that request_id");
+                None
+            }
+        }
+    }
+
+    /// Handles an inbound `SearchByIdRequest`: performs the local search and either
+    /// answers directly, when this node is the result, or relays the request to the
+    /// next hop.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, target = ?req.target, direction = ?req.direction, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_search_by_id_request(&self, req: IdSearchReq) -> anyhow::Result<()> {
+        tracing::trace!("received request");
+
+        let res = self
+            .core
+            .search_by_id(req)
+            .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
+
+        let span = tracing::trace_span!(
+            parent: &tracing::Span::current(),
+            "terminating",
+            result = ?res.result,
+            termination_level = ?res.termination_level
+        );
+        let _enter = span.enter();
+
+        if res.result == self.core.id() {
+            self.net
+                .send_event(req.origin, SearchByIdResponse(res))
+                .map_err(|e| anyhow!("failed to send response event for search by id: {}", e))?;
+            tracing::info!("found self in search by id, terminated the search result");
+            return Ok(());
+        }
+
+        let relay_request = SearchByIdRequest(IdSearchReq {
+            level: res.termination_level,
+            ..req
+        });
+
+        self.net
+            .send_event(res.result, relay_request)
+            .map_err(|e| {
+                anyhow!(
+                    "failed to send relay response event for search by id: {}",
+                    e
+                )
+            })?;
+        tracing::info!("relayed search by id request to the next node");
+        Ok(())
+    }
+
+    /// Handles an inbound `SearchByIdResponse`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, target = ?res.target, result = ?res.result, termination_level = ?res.termination_level),
+        skip(self, res)
+    )]
+    fn handle_search_by_id_response(&self, res: IdSearchRes) -> anyhow::Result<()> {
+        if let Some(Waiter::AsyncSearch(tx)) = self.take_waiter(res.nonce, "AsyncSearch", |w| {
+            matches!(w, Waiter::AsyncSearch(_))
+        }) {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetMaxLevelOp`: reads the local lookup table and replies
+    /// with `RetMaxLevelOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce),
+        skip(self, req)
+    )]
+    fn handle_get_max_level_request(&self, req: MaxLevelReq) -> anyhow::Result<()> {
+        let max_level = self
+            .core
+            .max_level()
+            .map_err(|e| anyhow!("failed to read local max level: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetMaxLevelOp(MaxLevelRes {
+                    nonce: req.nonce,
+                    max_level,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send max level response: {}", e))?;
+        tracing::info!("answered get max level request with {:?}", max_level);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetMaxLevelOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, max_level = ?res.max_level),
+        skip(self, res)
+    )]
+    fn handle_ret_max_level_response(&self, res: MaxLevelRes) -> anyhow::Result<()> {
+        if let Some(Waiter::MaxLevel(tx)) =
+            self.take_waiter(res.nonce, "MaxLevel", |w| matches!(w, Waiter::MaxLevel(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `GetNeighborOp`: reads the local lookup table and replies
+    /// with `RetNeighborOp`.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, level = ?req.level, direction = ?req.direction),
+        skip(self, req)
+    )]
+    fn handle_get_neighbor_request(&self, req: NeighborReq) -> anyhow::Result<()> {
+        let neighbor = self
+            .core
+            .neighbor_entry(req.level, req.direction)
+            .map_err(|e| anyhow!("failed to read local neighbor entry: {}", e))?;
+
+        self.net
+            .send_event(
+                req.origin,
+                RetNeighborOp(NeighborRes {
+                    nonce: req.nonce,
+                    level: req.level,
+                    direction: req.direction,
+                    neighbor,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send neighbor response: {}", e))?;
+        tracing::info!("answered get neighbor request with {:?}", neighbor);
+
+        Ok(())
+    }
+
+    /// Handles an inbound `RetNeighborOp`: resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, level = ?res.level, direction = ?res.direction, neighbor = ?res.neighbor),
+        skip(self, res)
+    )]
+    fn handle_ret_neighbor_response(&self, res: NeighborRes) -> anyhow::Result<()> {
+        if let Some(Waiter::Neighbor(tx)) =
+            self.take_waiter(res.nonce, "Neighbor", |w| matches!(w, Waiter::Neighbor(_)))
+        {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
+
+    /// Reports whether `candidate` belongs in this node's own slot at `(level, direction)`.
+    /// This is the precondition [`Core::try_link`] and [`Core::try_relink`] require their
+    /// callers to enforce, and the two link handlers below are the only callers that take
+    /// all three values straight off the wire from a peer.
+    ///
+    /// Three things must hold, and a peer can break any of them.
+    ///
+    /// * `level` names a real lookup-table level. `Core::try_link` errors on an
+    ///   out-of-range level, and that error reads as a broken local invariant, which a
+    ///   peer-supplied value is not.
+    /// * `candidate` sits on `direction` from this node. `Core::try_link` only ever weighs
+    ///   the existing entry against `candidate`, never against this node itself, so a
+    ///   wrong-side candidate is installed silently and the table stops being ordered.
+    /// * `candidate` shares at least `level` bits of membership-vector prefix with this
+    ///   node. One level-`level` list holds only nodes that share a `level`-bit prefix, so
+    ///   a candidate without it belongs in a different list at that level and this node is
+    ///   not its neighbor there.
+    ///
+    /// A forwarded `GetLinkOp` keeps all three properties, so no legitimate request fails
+    /// this check at any hop. The hop a request forwards to sits strictly between this node
+    /// and the candidate, which leaves the candidate on the same side of that hop, and every
+    /// node in one level-`level` list shares that list's prefix.
+    ///
+    /// # Args
+    ///
+    /// * `level`, the lookup-table level the peer named.
+    /// * `direction`, receiver-owned, which of this node's own slots the peer named.
+    /// * `candidate`, the identity the peer proposes for that slot.
+    ///
+    /// # Returns
+    ///
+    /// `true` when all three hold, so the caller may hand the values to `Core::try_link`.
+    fn belongs_in_own_slot(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> bool {
+        if level >= LOOKUP_TABLE_LEVELS {
+            return false;
+        }
+
+        let on_direction = match direction {
+            Direction::Left => candidate.id() < self.id(),
+            Direction::Right => candidate.id() > self.id(),
+        };
+
+        on_direction && self.core.prefix_match(candidate.mem_vec(), level)
+    }
+
+    /// Handles an inbound `GetLinkOp`: either links the candidate directly, when
+    /// this node's own slot at `(level, dir)` is the correct place for it, or
+    /// forwards the request unchanged to whichever existing neighbor sits between
+    /// them, mirroring `Core::try_link`'s decision.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, candidate = ?req.candidate, dir = ?req.dir, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_get_link_request(&self, req: LinkReq) -> anyhow::Result<()> {
+        // every field is peer-controlled, with no accompanying local request to check it
+        // against, so a request this node cannot serve is a malformed or adversarial peer
+        // message rather than a broken local invariant. it is dropped, and neither
+        // answered nor propagated as a hard error.
+        if !self.belongs_in_own_slot(req.level, req.dir, req.candidate) {
+            tracing::warn!(
+                "rejected get link op naming a slot the candidate cannot occupy at level {}",
+                req.level
+            );
+            return Ok(());
+        }
+
+        match self
+            .core
+            .try_link(req.level, req.dir, req.candidate)
+            .map_err(|e| anyhow!("failed to decide link at level {}: {}", req.level, e))?
+        {
+            LinkOutcome::LinkedDirectly => {
+                let linked = self.self_identity();
+                self.net
+                    .send_event(
+                        req.candidate.id(),
+                        SetLinkOp(LinkRes {
+                            nonce: req.nonce,
+                            dir: req.dir.opposite(),
+                            level: req.level,
+                            linked: Some(linked),
+                        }),
+                    )
+                    .map_err(|e| anyhow!("failed to send link response: {}", e))?;
+                tracing::info!("linked candidate directly at level {}", req.level);
+            }
+            LinkOutcome::Forward(existing) => {
+                self.net
+                    .send_event(existing.id(), GetLinkOp(req))
+                    .map_err(|e| anyhow!("failed to forward get link request: {}", e))?;
+                tracing::info!(
+                    "forwarded get link request to existing neighbor at level {}",
+                    req.level
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `SetLinkOp`: applies the link to this node's own lookup
+    /// table, then resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, dir = ?res.dir, level = ?res.level, linked = ?res.linked),
+        skip(self, res)
+    )]
+    fn handle_set_link_response(&self, res: LinkRes) -> anyhow::Result<()> {
+        // the write runs whether or not a waiter matches below. a `SetLinkOp` can
+        // also arrive unsolicited as a repair push, and that correction must land
+        // in the table too. so the write is gated on the peer-supplied slot alone,
+        // never on a waiter, and a slot this node cannot use is skipped rather than
+        // erroring the whole event.
+        if let Some(linked) = res.linked {
+            if self.belongs_in_own_slot(res.level, res.dir, linked) {
+                self.core
+                    .try_link(res.level, res.dir, linked)
+                    .map_err(|e| anyhow!("failed to apply link at level {}: {}", res.level, e))?;
+                tracing::trace!("applied link to own lookup table");
+            } else {
+                tracing::warn!(
+                    "rejected set link op naming a slot the linked node cannot occupy at level {}",
+                    res.level
+                );
+            }
+        }
+
+        // the waiter matches only on the slot it asked about, so a reply naming any other
+        // slot leaves the request outstanding to time out. a peer cannot end this node's
+        // wait with an answer to a question it never asked.
+        if let Some(Waiter::Link { tx, .. }) = self.take_waiter(res.nonce, "Link", |w| {
+            matches!(w, Waiter::Link { level, dir, .. } if *level == res.level && *dir == res.dir)
+        }) {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
     }
 }
 
 impl EventProcessorCore for BaseNode {
+    #[tracing::instrument(
+        level = "trace",
+        parent = &self.span,
+        fields(origin = ?origin_id),
+        skip(self, event)
+    )]
     fn process_incoming_event(&self, origin_id: Identifier, event: Event) -> anyhow::Result<()> {
-        let _enter = self.span.enter();
-
         match event {
-            SearchByIdRequest(req) => {
-                let span = tracing::trace_span!(
-                    "search_by_id_request",
-                    origin = ?origin_id,
-                    target = ?req.target,
-                    direction = ?req.direction,
-                    level = ?req.level
-                );
-                let _enter = span.enter();
-                tracing::trace!("received request");
-
-                let res = self
-                    .core
-                    .search_by_id(req)
-                    .map_err(|e| anyhow!("failed to perform search by id {}", e))?;
-
-                let span = tracing::trace_span!(
-                    "terminating",
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                if res.result == self.core.id() {
-                    self.net
-                        .send_event(req.origin, SearchByIdResponse(res))
-                        .map_err(|e| {
-                            anyhow!("failed to send response event for search by id: {}", e)
-                        })?;
-                    tracing::info!("found self in search by id, terminated the search result");
-                    return Ok(());
-                }
-
-                let relay_request = SearchByIdRequest(IdSearchReq {
-                    level: res.termination_level,
-                    ..req
-                });
-
-                self.net
-                    .send_event(res.result, relay_request)
-                    .map_err(|e| {
-                        anyhow!(
-                            "failed to send relay response event for search by id: {}",
-                            e
-                        )
-                    })?;
-                tracing::info!("relayed search by id request to the next node");
-                Ok(())
-            }
-            SearchByIdResponse(res) => {
-                let span = tracing::trace_span!(
-                    "search_by_id_response",
-                    origin = ?origin_id,
-                    target = ?res.target,
-                    result = ?res.result,
-                    termination_level = ?res.termination_level
-                );
-                let _enter = span.enter();
-
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Search(_))) {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
-
-                if let Some(Waiter::Search(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::MaxLevel` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching search waiter for nonce {:?}", res.nonce);
-                }
-
-                Ok(())
-            }
-            RetMaxLevelOp(res) => {
-                let mut request_id_map = self
-                    .request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::MaxLevel(_)))
-                {
-                    request_id_map.remove(&res.nonce)
-                } else {
-                    None
-                };
-                drop(request_id_map);
-
-                if let Some(Waiter::MaxLevel(tx)) = waiter {
-                    if let Err(e) = tx.send(res) {
-                        tracing::warn!("failed to send the response to the receiver end: {:?}", e)
-                    }
-                } else {
-                    // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::Search` request: left untouched in the map, not this
-                    // arm's concern. log and move on.
-                    tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
-                }
-
-                Ok(())
-            }
+            SearchByIdRequest(req) => self.handle_search_by_id_request(req),
+            SearchByIdResponse(res) => self.handle_search_by_id_response(res),
+            GetMaxLevelOp(req) => self.handle_get_max_level_request(req),
+            RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
+            GetNeighborOp(req) => self.handle_get_neighbor_request(req),
+            RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
+            GetLinkOp(req) => self.handle_get_link_request(req),
+            SetLinkOp(res) => self.handle_set_link_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
@@ -376,12 +907,14 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than,
+        assert_doubly_linked_at_level, random_address, random_identifier,
+        random_identifier_greater_than, random_identifier_less_than, random_identity,
         random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
+    use crate::node::testutil::{make_core, poll_until_some, sorted_nodes_fixture};
     use unimock::*;
 
     /// builds a `BaseNode` over `mock_net`, factoring out repeated core/node construction.
@@ -482,11 +1015,1041 @@ mod tests {
         assert_eq!(level_result.expect("should resolve"), expected_level);
     }
 
+    /// A single in-flight `send_search_by_id_req` call resolves to the result of its
+    /// correlated `SearchByIdResponse` and sends the caller-supplied `direction` and `level`.
+    #[tokio::test]
+    async fn test_send_search_by_id_req_resolves() {
+        let id = random_identifier();
+        let introducer = random_identifier();
+        let expected_anchor = random_identifier();
+        let search_level: LookupTableLevel = 3;
+        let nonce = Nonce::random();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, introducer, "expected request sent to the introducer");
+                    let SearchByIdRequest(req) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(req.direction, Direction::Right);
+                    assert_eq!(req.level, search_level);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(make_core(id, Box::new(ArrayLookupTable::new())));
+        let node =
+            BaseNode::new(span_fixture(), core, Box::new(mock_net)).expect("failed to create node");
+
+        let (res, ()) = tokio::join!(
+            node.send_search_by_id_req(
+                introducer,
+                nonce,
+                id,
+                search_level,
+                Direction::Right,
+                Duration::from_millis(200)
+            ),
+            async {
+                node.process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce,
+                        target: id,
+                        termination_level: search_level,
+                        result: expected_anchor,
+                    }),
+                )
+                .expect("failed to process reply");
+            }
+        );
+
+        assert_eq!(res.expect("should resolve").result, expected_anchor);
+    }
+
+    /// A single in-flight `get_neighbor` call resolves to the neighbor entry carried
+    /// by its correlated `RetNeighborOp` reply, and the outbound request carries the
+    /// caller-supplied `direction` and `level`.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let expected_neighbor = random_identity();
+        let query_level: LookupTableLevel = 3;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            assert_eq!(req.direction, Direction::Right);
+                            assert_eq!(req.level, query_level);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: query_level,
+                                direction: Direction::Right,
+                                neighbor: Some(expected_neighbor),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(
+            neighbor_result.expect("should resolve").map(|n| n.id()),
+            Some(expected_neighbor.id())
+        );
+    }
+
+    /// A `get_neighbor` call whose correlated `RetNeighborOp` reply carries no neighbor
+    /// resolves to `Ok(None)`, the "queried node has none there" case `Option<Identity>`
+    /// exists to carry.
+    #[tokio::test]
+    async fn test_get_neighbor_resolves_to_none() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let from = random_identifier();
+        let query_level: LookupTableLevel = 2;
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, from, "expected request sent to the queried node");
+                    match event {
+                        GetNeighborOp(req) => {
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (neighbor_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.get_neighbor(
+                    from,
+                    Direction::Right,
+                    query_level,
+                    Duration::from_millis(200)
+                ),
+                async {
+                    // captured synchronously by the mock before get_neighbor's first
+                    // await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            from,
+                            RetNeighborOp(NeighborRes {
+                                nonce,
+                                level: query_level,
+                                direction: Direction::Right,
+                                neighbor: None,
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        assert_eq!(neighbor_result.expect("should resolve"), None);
+    }
+
+    /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
+    /// lookup table and replying with `RetMaxLevelOp`, the responder side of the round
+    /// trip `get_max_level` drives from the requester side.
+    #[test]
+    fn test_process_incoming_event_answers_get_max_level_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_level: LookupTableLevel = 4;
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(random_identity(), expected_level, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetMaxLevelOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.max_level, expected_level);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetMaxLevelOp(MaxLevelReq {
+                nonce: Nonce::random(),
+                origin,
+            }),
+        )
+        .expect("failed to answer get max level request");
+    }
+
+    /// `process_incoming_event` answers a `GetNeighborOp` request by reading the local
+    /// lookup table and replying with `RetNeighborOp`, the responder side of the round
+    /// trip `get_neighbor` drives from the requester side.
+    #[test]
+    fn test_process_incoming_event_answers_get_neighbor_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        let expected_neighbor = random_identity();
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(expected_neighbor, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, origin, "expected response sent back to the requester");
+                    let RetNeighborOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.direction, Direction::Right);
+                    assert_eq!(res.neighbor.map(|n| n.id()), Some(expected_neighbor.id()));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            origin,
+            GetNeighborOp(NeighborReq {
+                nonce: Nonce::random(),
+                origin,
+                level: 0,
+                direction: Direction::Right,
+            }),
+        )
+        .expect("failed to answer get neighbor request");
+    }
+
+    /// `process_incoming_event` answers a `GetLinkOp` whose requested slot is empty
+    /// by linking the candidate directly and replying to it with `SetLinkOp` carrying
+    /// this node's own identity, the responder side of the round trip
+    /// `send_link_request` drives from the requester side.
+    #[test]
+    fn test_process_incoming_event_links_get_link_request_directly() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let address = random_address();
+        // the request names this node's own right slot, so the candidate must be larger.
+        let candidate = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        candidate.id(),
+                        "expected reply sent back to the candidate"
+                    );
+                    let SetLinkOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.dir, Direction::Left);
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.linked.map(|i| i.id()), Some(id));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to answer get link request");
+    }
+
+    /// A `GetLinkOp` whose requested slot already holds a neighbor strictly between
+    /// this node and the candidate is forwarded, unchanged, to that neighbor instead
+    /// of being answered directly, mirroring `Core::try_link`'s `Forward` outcome.
+    #[test]
+    fn test_process_incoming_event_forwards_get_link_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        // this node, the neighbor already in its own right slot, then the candidate, in
+        // ascending order. only that middle ordering makes the handler forward.
+        let existing_id = random_identifier_greater_than(&id);
+        let candidate = Identity::new(
+            random_identifier_greater_than(&existing_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(existing, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        existing.id(),
+                        "expected the request forwarded to the closer neighbor"
+                    );
+                    let GetLinkOp(req) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(req.candidate.id(), candidate.id());
+                    assert_eq!(req.dir, Direction::Right);
+                    assert_eq!(req.level, 0);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to forward get link request");
+    }
+
+    /// A single in-flight `send_link_request` call resolves once its correlated
+    /// `SetLinkOp` reply arrives, and that reply's `linked` identity is applied to
+    /// this node's own lookup table via the arm's own write path (not by
+    /// `send_link_request` itself). The outbound request carries this node's own
+    /// identity as `candidate`.
+    ///
+    /// The request names the responder's own right slot, so the reply must name this
+    /// node's own left slot and carry a smaller identifier. Those are the two values
+    /// `handle_set_link_response` matches the waiter on and validates the write against,
+    /// so a reply shaped any other way resolves nothing and writes nothing.
+    #[tokio::test]
+    async fn test_send_link_request_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let address = random_address();
+        let dest = random_identifier();
+        let linked_identity = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, event_dest: Identifier, event: Event| {
+                    assert_eq!(event_dest, dest, "expected request sent to dest");
+                    match event {
+                        GetLinkOp(req) => {
+                            assert_eq!(
+                                req.candidate,
+                                Identity::new(id, mem_vec, address),
+                                "expected the request to carry this node's own identity"
+                            );
+                            assert_eq!(req.dir, Direction::Right);
+                            assert_eq!(req.level, 0);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (send_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.send_link_request(dest, Direction::Right, 0, Duration::from_millis(200)),
+                async {
+                    // captured synchronously by the mock before send_link_request's
+                    // first await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            dest,
+                            SetLinkOp(LinkRes {
+                                nonce,
+                                dir: Direction::Left,
+                                level: 0,
+                                linked: Some(linked_identity),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        send_result.expect("should resolve");
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked_identity.id()),
+            "the SetLinkOp arm should have applied the link to this node's own table"
+        );
+    }
+
+    /// A full `GetLinkOp`/`SetLinkOp` round trip over the mock hub leaves both nodes'
+    /// own tables ordered correctly. The candidate asks the responder, which holds the
+    /// smaller identifier, to install the candidate in the responder's own right slot,
+    /// and the responder's reply must land in the candidate's own left slot rather than
+    /// its right one. A reply naming the candidate's right slot would put a smaller
+    /// identifier there, breaking the ordering invariant, and `try_link` on the
+    /// candidate cannot reject that write because the slot it lands in is empty.
+    #[tokio::test]
+    async fn test_link_round_trip_fills_the_candidates_mirror_slot() {
+        // the smaller identifier is the responder, and the fixture returns them ascending.
+        // the responder's own node handle is never used directly. `BaseNode::new` registers
+        // a clone of its network, and that clone is what answers the inbound request.
+        let (ids, nodes, tables) = sorted_nodes_fixture(2);
+        let (responder_id, candidate_id) = (ids[0], ids[1]);
+        let (responder_lt, candidate_lt) = (&tables[0], &tables[1]);
+        let candidate = &nodes[1];
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            candidate.send_link_request(
+                responder_id,
+                Direction::Right,
+                0,
+                Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("test timed out")
+        .expect("the link request should resolve");
+
+        assert_eq!(
+            responder_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(candidate_id),
+            "the responder must hold the candidate in the slot it was asked to fill"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(responder_id),
+            "the candidate's own left slot must hold the responder"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "the candidate's own right slot must stay empty, the responder's identifier is smaller"
+        );
+    }
+
+    /// A `GetLinkOp` still replies into the original candidate's mirror slot after two
+    /// forwarding hops, never into a hop's slot. Four nodes link rightward over real
+    /// round trips, and every candidate asks the smallest node, so the last request
+    /// walks past two linked nodes before the third accepts it. Every node must end up
+    /// pointing back at its neighbor.
+    ///
+    /// A reply that names the unmirrored slot does more than misplace one pointer. It
+    /// writes a smaller identifier into the candidate's own right slot, and the next
+    /// request then forwards between those two nodes forever, because each one reads
+    /// the other as closer to the new candidate. The mock hub dispatches re-entrantly,
+    /// so that loop overflows the stack and aborts the test binary.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_rightward() {
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
+
+        // every candidate asks the smallest node, so its request forwards past every
+        // node already linked to that node's right before some node accepts it.
+        for candidate in nodes.iter().skip(1) {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[0],
+                    Direction::Right,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        assert_doubly_linked_at_level(&ids, &tables, 0);
+    }
+
+    /// The leftward mirror of the rightward two-forward case. Four nodes link
+    /// leftward through real round trips, each one asking the largest node, so the
+    /// last request walks past two already-linked nodes before the third accepts it.
+    /// This is the other arm of `Direction::opposite`, and of `Core::try_link`'s
+    /// `Forward` decision, so a one-sided mirror passes the rightward case and fails
+    /// here.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_leftward() {
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
+
+        // every candidate asks the largest node, so its request forwards past every
+        // node already linked to that node's left before some node accepts it.
+        let largest = ids.len() - 1;
+        for candidate in nodes[..largest].iter().rev() {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[largest],
+                    Direction::Left,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        assert_doubly_linked_at_level(&ids, &tables, 0);
+    }
+
+    /// A `SetLinkOp` whose `level` is out of range for the lookup table (a
+    /// peer-controlled value, since `SetLinkOp` may arrive unsolicited with no
+    /// accompanying local request to validate it against) is rejected without
+    /// erroring the whole event and without touching the lookup table, while any
+    /// pending `Waiter::Link` at that nonce is still resolved: the table-write and
+    /// the waiter-resolution are independent paths.
+    #[tokio::test]
+    async fn test_set_link_op_rejects_out_of_range_level() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        // smaller than this node, so the reply's own left slot below is a legal place for
+        // it and the out-of-range level is the only thing wrong with this message.
+        let linked_identity = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: LOOKUP_TABLE_LEVELS,
+                dir: Direction::Left,
+            },
+        );
+
+        let result = node.process_incoming_event(
+            origin,
+            SetLinkOp(LinkRes {
+                nonce,
+                dir: Direction::Left,
+                level: LOOKUP_TABLE_LEVELS,
+                linked: Some(linked_identity),
+            }),
+        );
+        assert!(
+            result.is_ok(),
+            "an out-of-range level must not error the whole event"
+        );
+
+        let resolved = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("test timed out")
+            .expect("the waiter must still resolve regardless of the rejected write");
+        assert_eq!(resolved.nonce, nonce);
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error"),
+            None,
+            "the out-of-range write must never reach the lookup table"
+        );
+    }
+
+    /// A `GetLinkOp` asking this node to hold a candidate in its own right slot is dropped
+    /// when that candidate's identifier is smaller than this node's own. `Core::try_link`
+    /// cannot catch this, because it only ever weighs the existing entry against the
+    /// candidate and never against this node, so serving the request would put a smaller
+    /// identifier in the right slot and leave the table unordered.
+    ///
+    /// The mock network declares no `send_event`, so a reply or a forward panics the test.
+    #[test]
+    fn test_get_link_op_rejects_a_wrong_side_candidate() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let candidate = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("a malformed peer request must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a wrong-side candidate must never reach the lookup table"
+        );
+    }
+
+    /// A `GetLinkOp` above level zero is dropped when the candidate's membership vector
+    /// shares fewer than `level` prefix bits with this node's own. One level-`level` list
+    /// holds only nodes that share a `level`-bit prefix, so this node is not the candidate's
+    /// neighbor at that level, however the two identifiers order.
+    ///
+    /// The candidate's identifier is deliberately larger than this node's own, so the
+    /// identifier ordering is correct and only the prefix rule can reject this request. The
+    /// mock network declares no `send_event`, so a reply or a forward panics the test.
+    #[test]
+    fn test_get_link_op_rejects_a_prefix_mismatch_above_level_zero() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+
+        // flipping the top bit leaves zero shared prefix bits, one short of what level 1
+        // requires.
+        let mut far_bytes = mem_vec.to_bytes();
+        far_bytes[0] ^= 0x80;
+        let candidate = Identity::new(
+            random_identifier_greater_than(&id),
+            MembershipVector::from_bytes(&far_bytes)
+                .expect("failed to build a membership vector from bytes"),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 1,
+            }),
+        )
+        .expect("a malformed peer request must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(1, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a candidate without the level's shared prefix must never reach the lookup table"
+        );
+    }
+
+    /// A `SetLinkOp` naming this node's own right slot writes nothing when the linked
+    /// identifier is smaller than this node's own. The `SetLinkOp` handler is the second
+    /// peer-facing caller of the same slot rule the `GetLinkOp` handler enforces, and a
+    /// change that dropped the check at one caller alone would leave the other green.
+    ///
+    /// The nonce matches no waiter, so this drives the unsolicited write path.
+    #[test]
+    fn test_set_link_op_rejects_a_wrong_side_linked_node() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce: Nonce::random(),
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("a malformed peer reply must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a wrong-side linked node must never reach the lookup table"
+        );
+    }
+
+    /// A `SetLinkOp` carrying a live nonce but naming a slot other than the one the request
+    /// asked about leaves that request outstanding, so it times out rather than resolving on
+    /// an answer to a question this node never asked. `Waiter::Link` records the slot when
+    /// `send_link_request` parks the waiter, for exactly this comparison.
+    ///
+    /// The reply names a slot this node can legally fill, so its table write still runs.
+    /// Only the waiter match is under test here.
+    #[test]
+    fn test_set_link_op_ignores_a_reply_naming_another_slot() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let core = Box::new(make_core(id, Box::new(ArrayLookupTable::new())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, _rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: 0,
+                dir: Direction::Left,
+            },
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce,
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("a mismatched peer reply must not error the whole event");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .contains_key(&nonce),
+            "the waiter must stay parked, so its own request still times out"
+        );
+    }
+
+    /// A `SetLinkOp` with no waiter at its nonce still writes to this node's own lookup
+    /// table. A repair push arrives unsolicited by definition, so the write cannot depend on
+    /// a waiter. Without this test, a change that moved the write inside the waiter branch
+    /// would leave every other link test green.
+    #[test]
+    fn test_set_link_op_applies_an_unsolicited_write() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .is_empty(),
+            "this test must drive the no-waiter path"
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce: Nonce::random(),
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("an unsolicited set link op must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked.id()),
+            "an unsolicited set link op must still install the neighbor"
+        );
+    }
+
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
     /// live in the shared `request_id_map` simultaneously, then answers both. Guards three
     /// regressions.
     ///
-    /// 1. The map's `Mutex` held across the blocking `recv` or across the `.await`, which
+    /// 1. The map's `Mutex` held across the `.await`, which
     ///    deadlocks the moment two waiters coexist.
     /// 2. Reply routing that resolves whichever waiter it finds instead of matching on the
     ///    nonce.
@@ -552,10 +2115,13 @@ mod tests {
             level: 0,
             direction: Direction::Left,
         };
-        let search_handle =
-            tokio::task::spawn_blocking(move || node_search.search_by_id(search_req));
-        // deliberately generous: this budget is spent waiting for the blocking search
-        // thread to be scheduled, so a tight bound here fails under load. timeout
+        let search_handle = tokio::spawn(async move {
+            node_search
+                .search_by_id(search_req, Duration::from_secs(30))
+                .await
+        });
+        // deliberately generous: this budget is spent waiting for the spawned search task
+        // to be scheduled, so a tight bound here fails under load. timeout
         // behaviour is covered by `test_get_max_level_times_out_and_cleans_up`, and the
         // outer bound below is what fails this test if anything hangs.
         let max_level_fut = node.get_max_level(introducer, Duration::from_secs(30));
@@ -563,14 +2129,12 @@ mod tests {
         let deliver = async {
             // block until both requests are on the wire, in either order, so neither reply
             // can be delivered before its own waiter is registered.
-            let (search_nonce, max_level_nonce) = loop {
+            let (search_nonce, max_level_nonce) = poll_until_some(|| {
                 let s = *search_nonce_cell.lock().expect("mutex poisoned");
                 let m = *max_level_nonce_cell.lock().expect("mutex poisoned");
-                if let (Some(s), Some(m)) = (s, m) {
-                    break (s, m);
-                }
-                tokio::task::yield_now().await;
-            };
+                s.zip(m)
+            })
+            .await;
             node.process_incoming_event(
                 introducer,
                 RetMaxLevelOp(MaxLevelRes {
@@ -714,20 +2278,18 @@ mod tests {
         // deterministic wait for registration: poll the shared map itself rather than
         // just the nonce capture, so this actually confirms what `WaiterGuard` is about
         // to clean up is present.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_until_some(|| {
                 let registered = nonce_cell.lock().expect("mutex poisoned").is_some()
                     && !node
                         .request_id_map
                         .lock()
                         .expect("mutex poisoned")
                         .is_empty();
-                if registered {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+                registered.then_some(())
+            }),
+        )
         .await
         .expect("test timed out waiting for the waiter to register");
 
@@ -736,19 +2298,16 @@ mod tests {
         // aborting doesn't run the cancelled future's drop glue synchronously; it runs
         // the next time the runtime polls the task. bounded poll, not a wall-clock
         // sleep, per this project's timeout-every-async-wait rule.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if node
-                    .request_id_map
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_until_some(|| {
+                node.request_id_map
                     .lock()
                     .expect("mutex poisoned")
                     .is_empty()
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
+                    .then_some(())
+            }),
+        )
         .await
         .expect("test timed out waiting for the waiter map entry to be cleaned up after abort");
 
@@ -760,6 +2319,798 @@ mod tests {
                 .expect_err("aborted task should yield a join error")
                 .is_cancelled(),
             "expected the join error to report cancellation"
+        );
+    }
+
+    /// With `introducer.id() < self.id()` (the search-right branch) and both `s`, the
+    /// node just below `self.id()`, and `z`, the node just above, present, both
+    /// `GetLinkOp`s are answered with a confirming `SetLinkOp`, and
+    /// `join_stage1_link_level0` resolves once each reply is applied to this node's
+    /// own table. The `s`-reply lands on the left slot, the `z`-reply on the right.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_links_both_sides() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let introducer = random_identifier_less_than(&node_id);
+        // the replies are validated against this node's id, so `s` must sit below it and
+        // `z` above it.
+        let s_identity = Identity::new(
+            random_identifier_less_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let z_identity = Identity::new(
+            random_identifier_greater_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let s_id = s_identity.id();
+        let z_id = z_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let s_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let z_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let (search_mock, neighbor_mock, s_link_mock, z_link_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            s_link_nonce_cell.clone(),
+            z_link_nonce_cell.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "introducer.id() < self.id() must search Direction::Right"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, s_id, "neighbor query must go to s");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == s_id => {
+                            assert_eq!(
+                                req.dir,
+                                Direction::Right,
+                                "s's dir must be Direction::Right"
+                            );
+                            *s_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == z_id => {
+                            assert_eq!(req.dir, Direction::Left, "z's dir must be Direction::Left");
+                            *z_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: s_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Right,
+                        neighbor: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let (s_link_nonce, z_link_nonce) = poll_until_some(|| {
+                let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
+                let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
+                s.zip(z)
+            })
+            .await;
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    SetLinkOp(LinkRes {
+                        nonce: s_link_nonce,
+                        dir: Direction::Left,
+                        level: 0,
+                        linked: Some(s_identity),
+                    }),
+                )
+                .expect("failed to process s link reply");
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    SetLinkOp(LinkRes {
+                        nonce: z_link_nonce,
+                        dir: Direction::Right,
+                        level: 0,
+                        linked: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process z link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(s_id),
+            "s's reply must land on this node's own left slot"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(z_id),
+            "z's reply must land on this node's own right slot"
+        );
+    }
+
+    /// When the stage-1 search resolves a node that holds this node's own id,
+    /// `join_stage1_link_level0` returns an error and sends no neighbor query and no
+    /// link request, since another node already holds that id.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_aborts_on_id_collision() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let introducer = random_identifier_less_than(&node_id);
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let search_mock = search_nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!(
+                            "no request may follow a colliding search result, got {:?} to {:?}",
+                            event, dest
+                        ),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: node_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect_err("a search result equal to this node's own id must abort the join");
+    }
+
+    /// When `introducer` holds this node's own id, `join_stage1_link_level0` returns an
+    /// error before it sends any request, since no search direction fits.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_rejects_introducer_with_own_id() {
+        let node_id = random_identifier();
+        let span = span_fixture();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            random_membership_vector(),
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            node.join_stage1_link_level0(node_id, 0, Duration::from_secs(1)),
+        )
+        .await
+        .expect("test timed out")
+        .expect_err("an introducer holding this node's own id must abort the join");
+    }
+
+    /// The introducer is itself `s`, the closest node below this node's id. Its search finds
+    /// no closer node, so it replies with its own id. The join must still link this node
+    /// between the introducer and the introducer's right neighbor `z`, exactly as it does
+    /// when `s` is a different node.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_introducer_is_the_closest() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let s_identity = Identity::new(
+            random_identifier_less_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let introducer = s_identity.id();
+        // the replies are validated against this node's id, so `z` must sit above it.
+        let z_identity = Identity::new(
+            random_identifier_greater_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let z_id = z_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let s_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let z_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let (search_mock, neighbor_mock, s_link_mock, z_link_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            s_link_nonce_cell.clone(),
+            z_link_nonce_cell.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "introducer.id() < u.id() must search Direction::Right"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, introducer, "neighbor query must go to s");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == introducer => {
+                            assert_eq!(
+                                req.dir,
+                                Direction::Right,
+                                "s's dir must be Direction::Right"
+                            );
+                            *s_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) if dest == z_id => {
+                            assert_eq!(req.dir, Direction::Left, "z's dir must be Direction::Left");
+                            *z_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: introducer,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Right,
+                        neighbor: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let (s_link_nonce, z_link_nonce) = poll_until_some(|| {
+                let s = *s_link_nonce_cell.lock().expect("mutex poisoned");
+                let z = *z_link_nonce_cell.lock().expect("mutex poisoned");
+                s.zip(z)
+            })
+            .await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SetLinkOp(LinkRes {
+                        nonce: s_link_nonce,
+                        dir: Direction::Left,
+                        level: 0,
+                        linked: Some(s_identity),
+                    }),
+                )
+                .expect("failed to process s link reply");
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    SetLinkOp(LinkRes {
+                        nonce: z_link_nonce,
+                        dir: Direction::Right,
+                        level: 0,
+                        linked: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process z link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(introducer),
+            "s's reply must land on this node's own left slot, even though s is the introducer"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(z_id),
+            "z's reply must land on this node's own right slot"
+        );
+    }
+
+    /// The search returns `s`, the closest node below this node's id, and `s` has no right
+    /// neighbor `z`. The join must send only one link request, to `s`, and finish once `s`
+    /// replies. This node's left entry then holds `s`, and its right entry stays empty.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_no_right_neighbor_sends_single_link_request() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let introducer = random_identifier_less_than(&node_id);
+        // the reply is validated against this node's id, so `s` must sit below it.
+        let s_identity = Identity::new(
+            random_identifier_less_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let s_id = s_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let s_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let link_request_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let (search_mock, neighbor_mock, s_link_mock, link_count_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            s_link_nonce_cell.clone(),
+            link_request_count.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "introducer.id() < u.id() must search Direction::Right"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, s_id, "neighbor query must go to s");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Right,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) => {
+                            assert_eq!(
+                                dest,
+                                s_id,
+                                "no z was ever known, so no second link request should be sent"
+                            );
+                            *link_count_mock.lock().expect("mutex poisoned") += 1;
+                            *s_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: s_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Right,
+                        neighbor: None,
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let s_link_nonce =
+                poll_until_some(|| *s_link_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    s_id,
+                    SetLinkOp(LinkRes {
+                        nonce: s_link_nonce,
+                        dir: Direction::Left,
+                        level: 0,
+                        linked: Some(s_identity),
+                    }),
+                )
+                .expect("failed to process s link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            *link_request_count.lock().expect("mutex poisoned"),
+            1,
+            "exactly one GetLinkOp should ever be sent when z is None"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(s_id)
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "right side must remain unset when z was None at query time"
+        );
+    }
+
+    /// The introducer's id is above this node's id, so the search runs left and returns `z`,
+    /// the closest node above this node's id. `z` has no left neighbor, so this node becomes
+    /// the new leftmost node. The join must send only one link request, to `z`, and finish
+    /// once `z` replies. This node's right entry then holds `z`, and its left entry stays empty.
+    #[tokio::test]
+    async fn test_join_stage1_link_level0_new_leftmost_node_sends_single_link_request() {
+        let node_id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let address = random_address();
+        let span = span_fixture();
+        let introducer = random_identifier_greater_than(&node_id);
+        // the reply is validated against this node's id, so `z` must sit above it.
+        let z_identity = Identity::new(
+            random_identifier_greater_than(&node_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let z_id = z_identity.id();
+
+        let search_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let neighbor_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let z_link_nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let link_request_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let (search_mock, neighbor_mock, z_link_mock, link_count_mock) = (
+            search_nonce_cell.clone(),
+            neighbor_nonce_cell.clone(),
+            z_link_nonce_cell.clone(),
+            link_request_count.clone(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    match event {
+                        SearchByIdRequest(req) => {
+                            assert_eq!(dest, introducer, "search must go to the introducer");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Left,
+                                "introducer.id() > u.id() must search Direction::Left"
+                            );
+                            *search_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetNeighborOp(req) => {
+                            assert_eq!(dest, z_id, "neighbor query must go to z");
+                            assert_eq!(
+                                req.direction,
+                                Direction::Left,
+                                "neighbor query must reuse the search's own direction"
+                            );
+                            *neighbor_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        GetLinkOp(req) => {
+                            assert_eq!(
+                                dest, z_id,
+                                "no s was ever known, so no second link request should be sent"
+                            );
+                            assert_eq!(req.dir, Direction::Left, "z's dir must be Direction::Left");
+                            *link_count_mock.lock().expect("mutex poisoned") += 1;
+                            *z_link_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                        }
+                        _ => panic!("unexpected event to {:?}: {:?}", dest, event),
+                    }
+                    Ok(())
+                })),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            node_id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let deliver = async {
+            let search_nonce =
+                poll_until_some(|| *search_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce: search_nonce,
+                        target: node_id,
+                        termination_level: 0,
+                        result: z_id,
+                    }),
+                )
+                .expect("failed to process search reply");
+
+            let neighbor_nonce =
+                poll_until_some(|| *neighbor_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    RetNeighborOp(NeighborRes {
+                        nonce: neighbor_nonce,
+                        level: 0,
+                        direction: Direction::Left,
+                        neighbor: None,
+                    }),
+                )
+                .expect("failed to process neighbor reply");
+
+            let z_link_nonce =
+                poll_until_some(|| *z_link_nonce_cell.lock().expect("mutex poisoned")).await;
+            node_reply
+                .process_incoming_event(
+                    z_id,
+                    SetLinkOp(LinkRes {
+                        nonce: z_link_nonce,
+                        dir: Direction::Right,
+                        level: 0,
+                        linked: Some(z_identity),
+                    }),
+                )
+                .expect("failed to process z link reply");
+        };
+
+        let (join_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.join_stage1_link_level0(introducer, 0, Duration::from_secs(1)),
+                deliver
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        join_result.expect("join_stage1_link_level0 should resolve");
+
+        assert_eq!(
+            *link_request_count.lock().expect("mutex poisoned"),
+            1,
+            "exactly one GetLinkOp should ever be sent when s is None"
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|identity| identity.id()),
+            Some(z_id)
+        );
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error"),
+            None,
+            "left side must remain unset when s was None at query time, i.e. u is the new leftmost node"
         );
     }
 }
