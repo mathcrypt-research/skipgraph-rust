@@ -34,13 +34,13 @@ pub trait Core: Send + Sync {
     fn search_by_mem_vec(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes>;
 
     /// Returns the highest lookup-table level at which this node has any
-    /// populated neighbor entry, on either side. Used by join bootstrap: a
+    /// populated neighbor entry, on either direction. Used by join bootstrap: a
     /// joining node asks an introducer for this value to seed its starting
     /// search level.
     ///
     /// # Returns
     ///
-    /// `0` when the lookup table has no populated entries on either side.
+    /// `0` when the lookup table has no populated entries on either direction.
     /// This is indistinguishable from a table whose only populated entry sits
     /// at level 0 itself; callers that only need a starting search level (the
     /// join-bootstrap use case) are unaffected either way.
@@ -89,7 +89,7 @@ pub trait Core: Send + Sync {
     /// # Preconditions
     ///
     /// Same precondition as [`LookupTable::try_link`]: callers must ensure `candidate` actually
-    /// belongs on the `direction` side of this node before calling.
+    /// belongs in this node's `direction` slot before calling.
     ///
     /// # Errors
     ///
@@ -109,7 +109,7 @@ pub trait Core: Send + Sync {
     /// # Preconditions
     ///
     /// Same precondition as [`LookupTable::try_relink`]: callers must ensure `claimant` actually
-    /// belongs on the `direction` side of this node before calling.
+    /// belongs in this node's `direction` slot before calling.
     ///
     /// # Errors
     ///

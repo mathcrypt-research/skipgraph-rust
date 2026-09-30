@@ -368,7 +368,7 @@ fn test_max_level_empty_table() {
     assert_eq!(core.max_level().unwrap(), 0);
 }
 
-/// Verifies `max_level` returns the highest populated level when only one side
+/// Verifies `max_level` returns the highest populated level when only one direction
 /// of the table has entries.
 #[test]
 fn test_max_level_one_side_populated() {
@@ -383,7 +383,7 @@ fn test_max_level_one_side_populated() {
     assert_eq!(core.max_level().unwrap(), 5);
 }
 
-/// Verifies `max_level` returns the highest populated level across both sides
+/// Verifies `max_level` returns the highest populated level across both directions
 /// when left and right are populated at different levels.
 #[test]
 fn test_max_level_both_sides_populated_different_levels() {

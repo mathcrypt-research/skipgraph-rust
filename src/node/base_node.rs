@@ -1,11 +1,12 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext,
-    LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq, NeighborRes,
+    Direction, IdSearchReq, IdSearchRes, Identifier, Identity, IrrevocableContext, LinkOutcome,
+    LinkReq, LinkRes, LookupTableLevel, MaxLevelReq, MaxLevelRes, MembershipVector, NeighborReq,
+    NeighborRes, LOOKUP_TABLE_LEVELS,
 };
 use crate::network::Event::{
-    GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
-    SearchByIdResponse,
+    GetLinkOp, GetMaxLevelOp, GetNeighborOp, RetMaxLevelOp, RetNeighborOp, SearchByIdRequest,
+    SearchByIdResponse, SetLinkOp,
 };
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
 use crate::network::MessageProcessor;
@@ -82,6 +83,12 @@ impl BaseNode {
     /// Returns the node's membership vector (delegated to core).
     pub(crate) fn mem_vec(&self) -> MembershipVector {
         self.core.mem_vec()
+    }
+
+    /// Returns this node's own full identity. Lives on `BaseNode`, not `Core`, since
+    /// `Core` knows nothing about the network and has no address to contribute.
+    fn self_identity(&self) -> Identity {
+        Identity::new(self.core.id(), self.core.mem_vec(), self.net.address())
     }
 
     #[tracing::instrument(level = "trace", parent = &self.span, fields(target = ?req.target, level = ?req.level), skip(self, req, timeout))]
@@ -289,6 +296,84 @@ impl BaseNode {
         }
     }
 
+    /// Sends `GetLinkOp` to `dest`, asking it to adopt this node as its neighbor
+    /// on `dir` at `level`, part of stage 1 of the join protocol.
+    ///
+    /// The resulting `SetLinkOp` reply is applied to this node's own lookup table by
+    /// `handle_set_link_response`, not by this method. By the time this method's
+    /// `await` resolves, that write has already happened, since both run on the same
+    /// synchronous event-processing path.
+    ///
+    /// # Args
+    ///
+    /// * `dest`, the node to send the link request to.
+    /// * `dir`, receiver-owned, which of `dest`'s own slots this node is
+    ///   proposed for.
+    /// * `level`, the lookup-table level at which the link is requested.
+    /// * `timeout`, how long to wait for a reply before giving up.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Sending the request fails, the reply channel is
+    ///   dropped, or `timeout` elapses before a reply arrives.
+    #[tracing::instrument(
+        parent = &self.span,
+        fields(dest = ?dest, dir = ?dir, level = ?level),
+        skip(self, timeout)
+    )]
+    async fn send_link_request(
+        &self,
+        dest: Identifier,
+        dir: Direction,
+        level: LookupTableLevel,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+
+        {
+            let mut request_id_map = self
+                .request_id_map
+                .lock()
+                .expect("mutex was poisoned by a previous panic");
+            request_id_map.insert(
+                nonce,
+                Waiter::Link {
+                    tx,
+                    level,
+                    // the reply names this node's own slot, the mirror of the slot the
+                    // request named in the responder's table.
+                    dir: dir.opposite(),
+                },
+            );
+        }
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        self.net
+            .send_event(
+                dest,
+                GetLinkOp(LinkReq {
+                    nonce,
+                    candidate: self.self_identity(),
+                    dir,
+                    level,
+                }),
+            )
+            .map_err(|e| anyhow!("failed to send get link request: {}", e))?;
+        tracing::info!("sent get link request, pending response");
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(res)) => {
+                tracing::info!("resolved link request: linked = {:?}", res.linked);
+                Ok(())
+            }
+            Ok(Err(_)) => Err(anyhow!(
+                "failed to receive get link response: sender dropped"
+            )),
+            Err(_) => Err(anyhow!("timed out waiting for get link response")),
+        }
+    }
+
     /// Removes and returns the `nonce`-keyed waiter, but only when the map's current
     /// entry there matches `is_expected_variant`; a present but wrong-typed entry is
     /// left untouched rather than destroyed, since it may belong to a different
@@ -321,7 +406,11 @@ impl BaseNode {
                 None
             }
             None => {
-                tracing::warn!("no waiter exists in the map for that request_id");
+                // a reply with no waiter is normal. an unsolicited `SetLinkOp` repair push has
+                // none by design, and neither has a reply that lands after its request timed out.
+                // TODO: install a counter metric here, so a rise in these stays visible without
+                // a warning log.
+                tracing::debug!("no waiter exists in the map for that request_id");
                 None
             }
         }
@@ -488,6 +577,153 @@ impl BaseNode {
         }
         Ok(())
     }
+
+    /// Reports whether `candidate` belongs in this node's own slot at `(level, direction)`.
+    /// This is the precondition [`Core::try_link`] and [`Core::try_relink`] require their
+    /// callers to enforce, and the two link handlers below are the only callers that take
+    /// all three values straight off the wire from a peer.
+    ///
+    /// Three things must hold, and a peer can break any of them.
+    ///
+    /// * `level` names a real lookup-table level. `Core::try_link` errors on an
+    ///   out-of-range level, and that error reads as a broken local invariant, which a
+    ///   peer-supplied value is not.
+    /// * `candidate` sits on `direction` from this node. `Core::try_link` only ever weighs
+    ///   the existing entry against `candidate`, never against this node itself, so a
+    ///   wrong-side candidate is installed silently and the table stops being ordered.
+    /// * `candidate` shares at least `level` bits of membership-vector prefix with this
+    ///   node. One level-`level` list holds only nodes that share a `level`-bit prefix, so
+    ///   a candidate without it belongs in a different list at that level and this node is
+    ///   not its neighbor there.
+    ///
+    /// A forwarded `GetLinkOp` keeps all three properties, so no legitimate request fails
+    /// this check at any hop. The hop a request forwards to sits strictly between this node
+    /// and the candidate, which leaves the candidate on the same side of that hop, and every
+    /// node in one level-`level` list shares that list's prefix.
+    ///
+    /// # Args
+    ///
+    /// * `level`, the lookup-table level the peer named.
+    /// * `direction`, receiver-owned, which of this node's own slots the peer named.
+    /// * `candidate`, the identity the peer proposes for that slot.
+    ///
+    /// # Returns
+    ///
+    /// `true` when all three hold, so the caller may hand the values to `Core::try_link`.
+    fn belongs_in_own_slot(
+        &self,
+        level: LookupTableLevel,
+        direction: Direction,
+        candidate: Identity,
+    ) -> bool {
+        if level >= LOOKUP_TABLE_LEVELS {
+            return false;
+        }
+
+        let on_direction = match direction {
+            Direction::Left => candidate.id() < self.id(),
+            Direction::Right => candidate.id() > self.id(),
+        };
+
+        on_direction && self.core.prefix_match(candidate.mem_vec(), level)
+    }
+
+    /// Handles an inbound `GetLinkOp`: either links the candidate directly, when
+    /// this node's own slot at `(level, dir)` is the correct place for it, or
+    /// forwards the request unchanged to whichever existing neighbor sits between
+    /// them, mirroring `Core::try_link`'s decision.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?req.nonce, candidate = ?req.candidate, dir = ?req.dir, level = ?req.level),
+        skip(self, req)
+    )]
+    fn handle_get_link_request(&self, req: LinkReq) -> anyhow::Result<()> {
+        // every field is peer-controlled, with no accompanying local request to check it
+        // against, so a request this node cannot serve is a malformed or adversarial peer
+        // message rather than a broken local invariant. it is dropped, and neither
+        // answered nor propagated as a hard error.
+        if !self.belongs_in_own_slot(req.level, req.dir, req.candidate) {
+            tracing::warn!(
+                "rejected get link op naming a slot the candidate cannot occupy at level {}",
+                req.level
+            );
+            return Ok(());
+        }
+
+        match self
+            .core
+            .try_link(req.level, req.dir, req.candidate)
+            .map_err(|e| anyhow!("failed to decide link at level {}: {}", req.level, e))?
+        {
+            LinkOutcome::LinkedDirectly => {
+                let linked = self.self_identity();
+                self.net
+                    .send_event(
+                        req.candidate.id(),
+                        SetLinkOp(LinkRes {
+                            nonce: req.nonce,
+                            dir: req.dir.opposite(),
+                            level: req.level,
+                            linked: Some(linked),
+                        }),
+                    )
+                    .map_err(|e| anyhow!("failed to send link response: {}", e))?;
+                tracing::info!("linked candidate directly at level {}", req.level);
+            }
+            LinkOutcome::Forward(existing) => {
+                self.net
+                    .send_event(existing.id(), GetLinkOp(req))
+                    .map_err(|e| anyhow!("failed to forward get link request: {}", e))?;
+                tracing::info!(
+                    "forwarded get link request to existing neighbor at level {}",
+                    req.level
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles an inbound `SetLinkOp`: applies the link to this node's own lookup
+    /// table, then resolves the correlated waiter, if any.
+    #[tracing::instrument(
+        level = "trace",
+        parent = &tracing::Span::current(),
+        fields(nonce = ?res.nonce, dir = ?res.dir, level = ?res.level, linked = ?res.linked),
+        skip(self, res)
+    )]
+    fn handle_set_link_response(&self, res: LinkRes) -> anyhow::Result<()> {
+        // the write runs whether or not a waiter matches below. a `SetLinkOp` can
+        // also arrive unsolicited as a repair push, and that correction must land
+        // in the table too. so the write is gated on the peer-supplied slot alone,
+        // never on a waiter, and a slot this node cannot use is skipped rather than
+        // erroring the whole event.
+        if let Some(linked) = res.linked {
+            if self.belongs_in_own_slot(res.level, res.dir, linked) {
+                self.core
+                    .try_link(res.level, res.dir, linked)
+                    .map_err(|e| anyhow!("failed to apply link at level {}: {}", res.level, e))?;
+                tracing::trace!("applied link to own lookup table");
+            } else {
+                tracing::warn!(
+                    "rejected set link op naming a slot the linked node cannot occupy at level {}",
+                    res.level
+                );
+            }
+        }
+
+        // the waiter matches only on the slot it asked about, so a reply naming any other
+        // slot leaves the request outstanding to time out. a peer cannot end this node's
+        // wait with an answer to a question it never asked.
+        if let Some(Waiter::Link { tx, .. }) = self.take_waiter(res.nonce, "Link", |w| {
+            matches!(w, Waiter::Link { level, dir, .. } if *level == res.level && *dir == res.dir)
+        }) {
+            if let Err(e) = tx.send(res) {
+                tracing::warn!("failed to send the response to the receiver end: {:?}", e)
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EventProcessorCore for BaseNode {
@@ -505,6 +741,8 @@ impl EventProcessorCore for BaseNode {
             RetMaxLevelOp(res) => self.handle_ret_max_level_response(res),
             GetNeighborOp(req) => self.handle_get_neighbor_request(req),
             RetNeighborOp(res) => self.handle_ret_neighbor_response(res),
+            GetLinkOp(req) => self.handle_get_link_request(req),
+            SetLinkOp(res) => self.handle_set_link_response(res),
             _ => {
                 tracing::warn!("received unsupported event payload type");
                 Err(anyhow!("unsupported event payload type"))
@@ -550,13 +788,14 @@ mod tests {
     use crate::core::model::direction::Direction;
     use crate::core::model::identity::Identity;
     use crate::core::testutil::fixtures::{
-        random_address, random_identifier, random_identifier_greater_than, random_identity,
+        assert_doubly_linked_at_level, random_address, random_identifier,
+        random_identifier_greater_than, random_identifier_less_than, random_identity,
         random_membership_vector, span_fixture,
     };
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
-    use crate::node::testutil::make_core;
+    use crate::node::testutil::{make_core, sorted_nodes_fixture};
     use unimock::*;
 
     /// builds a `BaseNode` over `mock_net`, factoring out repeated core/node construction.
@@ -885,8 +1124,8 @@ mod tests {
     /// `process_incoming_event` answers a `GetMaxLevelOp` request by reading the local
     /// lookup table and replying with `RetMaxLevelOp`, the responder side of the round
     /// trip `get_max_level` drives from the requester side.
-    #[tokio::test]
-    async fn test_process_incoming_event_answers_get_max_level_request() {
+    #[test]
+    fn test_process_incoming_event_answers_get_max_level_request() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
@@ -933,8 +1172,8 @@ mod tests {
     /// `process_incoming_event` answers a `GetNeighborOp` request by reading the local
     /// lookup table and replying with `RetNeighborOp`, the responder side of the round
     /// trip `get_neighbor` drives from the requester side.
-    #[tokio::test]
-    async fn test_process_incoming_event_answers_get_neighbor_request() {
+    #[test]
+    fn test_process_incoming_event_answers_get_neighbor_request() {
         let id = random_identifier();
         let mem_vec = random_membership_vector();
         let span = span_fixture();
@@ -980,6 +1219,711 @@ mod tests {
             }),
         )
         .expect("failed to answer get neighbor request");
+    }
+
+    /// `process_incoming_event` answers a `GetLinkOp` whose requested slot is empty
+    /// by linking the candidate directly and replying to it with `SetLinkOp` carrying
+    /// this node's own identity, the responder side of the round trip
+    /// `send_link_request` drives from the requester side.
+    #[test]
+    fn test_process_incoming_event_links_get_link_request_directly() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let address = random_address();
+        // the request names this node's own right slot, so the candidate must be larger.
+        let candidate = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        candidate.id(),
+                        "expected reply sent back to the candidate"
+                    );
+                    let SetLinkOp(res) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(res.dir, Direction::Left);
+                    assert_eq!(res.level, 0);
+                    assert_eq!(res.linked.map(|i| i.id()), Some(id));
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(ArrayLookupTable::new()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to answer get link request");
+    }
+
+    /// A `GetLinkOp` whose requested slot already holds a neighbor strictly between
+    /// this node and the candidate is forwarded, unchanged, to that neighbor instead
+    /// of being answered directly, mirroring `Core::try_link`'s `Forward` outcome.
+    #[test]
+    fn test_process_incoming_event_forwards_get_link_request() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        // this node, the neighbor already in its own right slot, then the candidate, in
+        // ascending order. only that middle ordering makes the handler forward.
+        let existing_id = random_identifier_greater_than(&id);
+        let candidate = Identity::new(
+            random_identifier_greater_than(&existing_id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let existing = Identity::new(existing_id, random_membership_vector(), random_address());
+
+        let lt = ArrayLookupTable::new();
+        lt.update_entry(existing, 0, Direction::Right)
+            .expect("failed to seed lookup table");
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(
+                        dest,
+                        existing.id(),
+                        "expected the request forwarded to the closer neighbor"
+                    );
+                    let GetLinkOp(req) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(req.candidate.id(), candidate.id());
+                    assert_eq!(req.dir, Direction::Right);
+                    assert_eq!(req.level, 0);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(BaseCore::new(span.clone(), id, mem_vec, Box::new(lt)));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("failed to forward get link request");
+    }
+
+    /// A single in-flight `send_link_request` call resolves once its correlated
+    /// `SetLinkOp` reply arrives, and that reply's `linked` identity is applied to
+    /// this node's own lookup table via the arm's own write path (not by
+    /// `send_link_request` itself). The outbound request carries this node's own
+    /// identity as `candidate`.
+    ///
+    /// The request names the responder's own right slot, so the reply must name this
+    /// node's own left slot and carry a smaller identifier. Those are the two values
+    /// `handle_set_link_response` matches the waiter on and validates the write against,
+    /// so a reply shaped any other way resolves nothing and writes nothing.
+    #[tokio::test]
+    async fn test_send_link_request_resolves() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let address = random_address();
+        let dest = random_identifier();
+        let linked_identity = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+        let nonce_cell: Arc<Mutex<Option<Nonce>>> = Arc::new(Mutex::new(None));
+        let nonce_mock = nonce_cell.clone();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::address
+                .each_call(matching!())
+                .answers_arc(Arc::new(move |_| address)),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, event_dest: Identifier, event: Event| {
+                    assert_eq!(event_dest, dest, "expected request sent to dest");
+                    match event {
+                        GetLinkOp(req) => {
+                            assert_eq!(
+                                req.candidate,
+                                Identity::new(id, mem_vec, address),
+                                "expected the request to carry this node's own identity"
+                            );
+                            assert_eq!(req.dir, Direction::Right);
+                            assert_eq!(req.level, 0);
+                            *nonce_mock.lock().expect("mutex poisoned") = Some(req.nonce);
+                            Ok(())
+                        }
+                        _ => panic!("unexpected event: {:?}", event),
+                    }
+                }))
+                .once(),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+        let node_reply = node.clone();
+
+        let (send_result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                node.send_link_request(dest, Direction::Right, 0, Duration::from_millis(200)),
+                async {
+                    // captured synchronously by the mock before send_link_request's
+                    // first await.
+                    let nonce = nonce_cell
+                        .lock()
+                        .expect("mutex poisoned")
+                        .expect("nonce should already be captured");
+                    node_reply
+                        .process_incoming_event(
+                            dest,
+                            SetLinkOp(LinkRes {
+                                nonce,
+                                dir: Direction::Left,
+                                level: 0,
+                                linked: Some(linked_identity),
+                            }),
+                        )
+                        .expect("failed to process reply");
+                }
+            )
+        })
+        .await
+        .expect("test timed out");
+
+        send_result.expect("should resolve");
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked_identity.id()),
+            "the SetLinkOp arm should have applied the link to this node's own table"
+        );
+    }
+
+    /// A full `GetLinkOp`/`SetLinkOp` round trip over the mock hub leaves both nodes'
+    /// own tables ordered correctly. The candidate asks the responder, which holds the
+    /// smaller identifier, to install the candidate in the responder's own right slot,
+    /// and the responder's reply must land in the candidate's own left slot rather than
+    /// its right one. A reply naming the candidate's right slot would put a smaller
+    /// identifier there, breaking the ordering invariant, and `try_link` on the
+    /// candidate cannot reject that write because the slot it lands in is empty.
+    #[tokio::test]
+    async fn test_link_round_trip_fills_the_candidates_mirror_slot() {
+        // the smaller identifier is the responder, and the fixture returns them ascending.
+        // the responder's own node handle is never used directly. `BaseNode::new` registers
+        // a clone of its network, and that clone is what answers the inbound request.
+        let (ids, nodes, tables) = sorted_nodes_fixture(2);
+        let (responder_id, candidate_id) = (ids[0], ids[1]);
+        let (responder_lt, candidate_lt) = (&tables[0], &tables[1]);
+        let candidate = &nodes[1];
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            candidate.send_link_request(
+                responder_id,
+                Direction::Right,
+                0,
+                Duration::from_millis(200),
+            ),
+        )
+        .await
+        .expect("test timed out")
+        .expect("the link request should resolve");
+
+        assert_eq!(
+            responder_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(candidate_id),
+            "the responder must hold the candidate in the slot it was asked to fill"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Left)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(responder_id),
+            "the candidate's own left slot must hold the responder"
+        );
+        assert_eq!(
+            candidate_lt
+                .get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "the candidate's own right slot must stay empty, the responder's identifier is smaller"
+        );
+    }
+
+    /// A `GetLinkOp` still replies into the original candidate's mirror slot after two
+    /// forwarding hops, never into a hop's slot. Four nodes link rightward over real
+    /// round trips, and every candidate asks the smallest node, so the last request
+    /// walks past two linked nodes before the third accepts it. Every node must end up
+    /// pointing back at its neighbor.
+    ///
+    /// A reply that names the unmirrored slot does more than misplace one pointer. It
+    /// writes a smaller identifier into the candidate's own right slot, and the next
+    /// request then forwards between those two nodes forever, because each one reads
+    /// the other as closer to the new candidate. The mock hub dispatches re-entrantly,
+    /// so that loop overflows the stack and aborts the test binary.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_rightward() {
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
+
+        // every candidate asks the smallest node, so its request forwards past every
+        // node already linked to that node's right before some node accepts it.
+        for candidate in nodes.iter().skip(1) {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[0],
+                    Direction::Right,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        assert_doubly_linked_at_level(&ids, &tables, 0);
+    }
+
+    /// The leftward mirror of the rightward two-forward case. Four nodes link
+    /// leftward through real round trips, each one asking the largest node, so the
+    /// last request walks past two already-linked nodes before the third accepts it.
+    /// This is the other arm of `Direction::opposite`, and of `Core::try_link`'s
+    /// `Forward` decision, so a one-sided mirror passes the rightward case and fails
+    /// here.
+    #[tokio::test]
+    async fn test_link_round_trip_forwards_twice_leftward() {
+        let (ids, nodes, tables) = sorted_nodes_fixture(4);
+
+        // every candidate asks the largest node, so its request forwards past every
+        // node already linked to that node's left before some node accepts it.
+        let largest = ids.len() - 1;
+        for candidate in nodes[..largest].iter().rev() {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                candidate.send_link_request(
+                    ids[largest],
+                    Direction::Left,
+                    0,
+                    Duration::from_millis(200),
+                ),
+            )
+            .await
+            .expect("test timed out")
+            .expect("the link request should resolve");
+        }
+
+        assert_doubly_linked_at_level(&ids, &tables, 0);
+    }
+
+    /// A `SetLinkOp` whose `level` is out of range for the lookup table (a
+    /// peer-controlled value, since `SetLinkOp` may arrive unsolicited with no
+    /// accompanying local request to validate it against) is rejected without
+    /// erroring the whole event and without touching the lookup table, while any
+    /// pending `Waiter::Link` at that nonce is still resolved: the table-write and
+    /// the waiter-resolution are independent paths.
+    #[tokio::test]
+    async fn test_set_link_op_rejects_out_of_range_level() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+        let origin = random_identifier();
+        // smaller than this node, so the reply's own left slot below is a legal place for
+        // it and the out-of-range level is the only thing wrong with this message.
+        let linked_identity = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: LOOKUP_TABLE_LEVELS,
+                dir: Direction::Left,
+            },
+        );
+
+        let result = node.process_incoming_event(
+            origin,
+            SetLinkOp(LinkRes {
+                nonce,
+                dir: Direction::Left,
+                level: LOOKUP_TABLE_LEVELS,
+                linked: Some(linked_identity),
+            }),
+        );
+        assert!(
+            result.is_ok(),
+            "an out-of-range level must not error the whole event"
+        );
+
+        let resolved = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("test timed out")
+            .expect("the waiter must still resolve regardless of the rejected write");
+        assert_eq!(resolved.nonce, nonce);
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Left)
+                .expect("get_entry should not error"),
+            None,
+            "the out-of-range write must never reach the lookup table"
+        );
+    }
+
+    /// A `GetLinkOp` asking this node to hold a candidate in its own right slot is dropped
+    /// when that candidate's identifier is smaller than this node's own. `Core::try_link`
+    /// cannot catch this, because it only ever weighs the existing entry against the
+    /// candidate and never against this node, so serving the request would put a smaller
+    /// identifier in the right slot and leave the table unordered.
+    ///
+    /// The mock network declares no `send_event`, so a reply or a forward panics the test.
+    #[test]
+    fn test_get_link_op_rejects_a_wrong_side_candidate() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let candidate = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 0,
+            }),
+        )
+        .expect("a malformed peer request must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a wrong-side candidate must never reach the lookup table"
+        );
+    }
+
+    /// A `GetLinkOp` above level zero is dropped when the candidate's membership vector
+    /// shares fewer than `level` prefix bits with this node's own. One level-`level` list
+    /// holds only nodes that share a `level`-bit prefix, so this node is not the candidate's
+    /// neighbor at that level, however the two identifiers order.
+    ///
+    /// The candidate's identifier is deliberately larger than this node's own, so the
+    /// identifier ordering is correct and only the prefix rule can reject this request. The
+    /// mock network declares no `send_event`, so a reply or a forward panics the test.
+    #[test]
+    fn test_get_link_op_rejects_a_prefix_mismatch_above_level_zero() {
+        let id = random_identifier();
+        let mem_vec = random_membership_vector();
+        let span = span_fixture();
+
+        // flipping the top bit leaves zero shared prefix bits, one short of what level 1
+        // requires.
+        let mut far_bytes = mem_vec.to_bytes();
+        far_bytes[0] ^= 0x80;
+        let candidate = Identity::new(
+            random_identifier_greater_than(&id),
+            MembershipVector::from_bytes(&far_bytes)
+                .expect("failed to build a membership vector from bytes"),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(BaseCore::new(
+            span.clone(),
+            id,
+            mem_vec,
+            Box::new(lt.clone()),
+        ));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            candidate.id(),
+            GetLinkOp(LinkReq {
+                nonce: Nonce::random(),
+                candidate,
+                dir: Direction::Right,
+                level: 1,
+            }),
+        )
+        .expect("a malformed peer request must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(1, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a candidate without the level's shared prefix must never reach the lookup table"
+        );
+    }
+
+    /// A `SetLinkOp` naming this node's own right slot writes nothing when the linked
+    /// identifier is smaller than this node's own. The `SetLinkOp` handler is the second
+    /// peer-facing caller of the same slot rule the `GetLinkOp` handler enforces, and a
+    /// change that dropped the check at one caller alone would leave the other green.
+    ///
+    /// The nonce matches no waiter, so this drives the unsolicited write path.
+    #[test]
+    fn test_set_link_op_rejects_a_wrong_side_linked_node() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_less_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce: Nonce::random(),
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("a malformed peer reply must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error"),
+            None,
+            "a wrong-side linked node must never reach the lookup table"
+        );
+    }
+
+    /// A `SetLinkOp` carrying a live nonce but naming a slot other than the one the request
+    /// asked about leaves that request outstanding, so it times out rather than resolving on
+    /// an answer to a question this node never asked. `Waiter::Link` records the slot when
+    /// `send_link_request` parks the waiter, for exactly this comparison.
+    ///
+    /// The reply names a slot this node can legally fill, so its table write still runs.
+    /// Only the waiter match is under test here.
+    #[test]
+    fn test_set_link_op_ignores_a_reply_naming_another_slot() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let core = Box::new(make_core(id, Box::new(ArrayLookupTable::new())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        let nonce = Nonce::random();
+        let (tx, _rx) = oneshot::channel::<LinkRes>();
+        node.request_id_map.lock().expect("mutex poisoned").insert(
+            nonce,
+            Waiter::Link {
+                tx,
+                level: 0,
+                dir: Direction::Left,
+            },
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce,
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("a mismatched peer reply must not error the whole event");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .contains_key(&nonce),
+            "the waiter must stay parked, so its own request still times out"
+        );
+    }
+
+    /// A `SetLinkOp` with no waiter at its nonce still writes to this node's own lookup
+    /// table. A repair push arrives unsolicited by definition, so the write cannot depend on
+    /// a waiter. Without this test, a change that moved the write inside the waiter branch
+    /// would leave every other link test green.
+    #[test]
+    fn test_set_link_op_applies_an_unsolicited_write() {
+        let id = random_identifier();
+        let span = span_fixture();
+        let linked = Identity::new(
+            random_identifier_greater_than(&id),
+            random_membership_vector(),
+            random_address(),
+        );
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+        ));
+
+        let lt = ArrayLookupTable::new();
+        let core = Box::new(make_core(id, Box::new(lt.clone())));
+        let node = BaseNode::new(span, core, Box::new(mock_net)).expect("failed to create node");
+
+        assert!(
+            node.request_id_map
+                .lock()
+                .expect("mutex poisoned")
+                .is_empty(),
+            "this test must drive the no-waiter path"
+        );
+
+        node.process_incoming_event(
+            random_identifier(),
+            SetLinkOp(LinkRes {
+                nonce: Nonce::random(),
+                dir: Direction::Right,
+                level: 0,
+                linked: Some(linked),
+            }),
+        )
+        .expect("an unsolicited set link op must not error the whole event");
+
+        assert_eq!(
+            lt.get_entry(0, Direction::Right)
+                .expect("get_entry should not error")
+                .map(|i| i.id()),
+            Some(linked.id()),
+            "an unsolicited set link op must still install the neighbor"
+        );
     }
 
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be

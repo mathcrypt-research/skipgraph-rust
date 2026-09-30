@@ -26,7 +26,7 @@ pub enum Event {
     GetNeighborOp(NeighborReq),
     /// the response carrying the queried neighbor entry, if any.
     RetNeighborOp(NeighborRes),
-    /// a forwardable request to link the candidate at the receiver's given side and level.
+    /// a forwardable request to link the candidate at the receiver's given direction and level.
     GetLinkOp(LinkReq),
     /// a link confirmation reply; also reused as a repair push correction.
     SetLinkOp(LinkRes),

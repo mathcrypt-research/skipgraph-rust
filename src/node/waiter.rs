@@ -1,5 +1,5 @@
 use crate::core::model::search::Nonce;
-use crate::core::{IdSearchRes, MaxLevelRes, NeighborRes};
+use crate::core::{Direction, IdSearchRes, LinkRes, LookupTableLevel, MaxLevelRes, NeighborRes};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -16,6 +16,18 @@ pub(super) enum Waiter {
     AsyncSearch(oneshot::Sender<IdSearchRes>),
     /// a pending `get_neighbor` call, resolved by a `RetNeighborOp`.
     Neighbor(oneshot::Sender<NeighborRes>),
+    /// a pending `send_link_request` call, resolved by a `SetLinkOp`.
+    ///
+    /// `level` and `dir` record the slot this node asked about, so
+    /// `BaseNode::handle_set_link_response` can tell a real answer from a peer-supplied
+    /// `SetLinkOp` that reuses the nonce but names some other slot. `dir` is receiver-owned
+    /// and holds this node's own slot, which is the opposite of the one the outbound
+    /// request named in the responder's table.
+    Link {
+        tx: oneshot::Sender<LinkRes>,
+        level: LookupTableLevel,
+        dir: Direction,
+    },
 }
 
 /// RAII guard that unconditionally removes a nonce's waiter-map entry on drop — ties

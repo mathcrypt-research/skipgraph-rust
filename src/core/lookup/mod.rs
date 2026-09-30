@@ -12,12 +12,12 @@ pub type LookupTableLevel = usize;
 pub enum LinkOutcome {
     /// The candidate was inserted at the requested `(level, direction)` slot: the slot was
     /// empty, or its previous occupant did not sit strictly between this node and the
-    /// candidate on that side, so the candidate is now the entry there.
+    /// candidate on that direction, so the candidate is now the entry there.
     LinkedDirectly,
     /// The table was left untouched: the carried identity is the existing entry at
     /// `(level, direction)`, and it sits strictly between this node and the candidate on that
-    /// side — it is closer to the candidate's true position, so the link request belongs there
-    /// instead.
+    /// direction. It is closer to the candidate's true position, so the link request belongs
+    /// there instead.
     Forward(Identity),
 }
 
@@ -32,8 +32,8 @@ pub enum RelinkOutcome {
     AlreadyConsistent,
     /// The table was left untouched: the carried identity is the existing entry at
     /// `(level, direction)`, and it sits strictly between this node and the claimant on that
-    /// side — it is closer to the claimant's true position, so it is not this node's call to
-    /// make, and the repair check should be retried against that neighbor instead.
+    /// direction. It is closer to the claimant's true position, so it is not this node's call
+    /// to make, and the repair check should be retried against that neighbor instead.
     Forward(Identity),
     /// The slot was empty, or its occupant was neither the claimant nor strictly between this
     /// node and the claimant (the same comparison `try_link` uses): the claimant is installed
@@ -67,16 +67,14 @@ pub trait LookupTable: Send + Sync {
 
     /// Atomically decides whether `candidate` becomes the neighbor at `(level, direction)`, or
     /// whether an existing neighbor there already sits strictly between this node and
-    /// `candidate` on that side and the request should be forwarded to it instead.
+    /// `candidate` on that direction and the request should be forwarded to it instead.
     ///
     /// The decision is atomic: inspecting the current entry and, when accepting, inserting
     /// `candidate` happen as one indivisible step with respect to any other concurrent call on
     /// the same `(level, direction)` slot — no caller can observe or race a partial decision.
     ///
-    /// The `direction` parameter is receiver-owned, never re-interpreted hop-to-hop: it always names this
-    /// node's own slot (`Direction::Right` is this node's own right slot, holding neighbors with
-    /// larger identifiers; `Direction::Left` is its own left slot), never something relative to a
-    /// caller or hop. An existing entry sits strictly between this node and `candidate` when,
+    /// The `direction` parameter is receiver-owned, naming this node's own slot, as [`Direction`]
+    /// defines it. An existing entry sits strictly between this node and `candidate` when,
     /// for `Direction::Right`, `existing.id() < candidate.id()`; for `Direction::Left`,
     /// `existing.id() > candidate.id()`:
     ///
@@ -90,8 +88,8 @@ pub trait LookupTable: Send + Sync {
     /// # Preconditions
     ///
     /// The lookup table has no notion of this node's own identifier, so it cannot verify that
-    /// `candidate` actually belongs on the `direction` side of this node — callers must ensure
-    /// that before calling. The comparison inside `try_link` only ever weighs the existing entry
+    /// `candidate` actually belongs in this node's `direction` slot. Callers must ensure that
+    /// before calling. The comparison inside `try_link` only ever weighs the existing entry
     /// against `candidate`, never against this node itself, so a violated precondition installs
     /// an out-of-order neighbor silently rather than returning an error.
     ///
@@ -142,9 +140,9 @@ pub trait LookupTable: Send + Sync {
     ///
     /// # Preconditions
     ///
-    /// Same as `try_link`: the lookup table has no notion of this node's own identifier, so
-    /// callers must ensure `claimant` actually belongs on the `direction` side before calling —
-    /// a violated precondition installs an out-of-order neighbor silently rather than erroring.
+    /// Same as `try_link`. The lookup table has no notion of this node's own identifier, so
+    /// callers must ensure `claimant` actually belongs in the `direction` slot before calling.
+    /// A violated precondition installs an out-of-order neighbor silently rather than erroring.
     ///
     /// # Errors
     ///
@@ -168,16 +166,16 @@ pub trait LookupTable: Send + Sync {
     /// having no production caller today.
     fn right_neighbors(&self) -> Vec<(usize, Identity)>;
 
-    /// Returns the highest level with a populated entry on either side.
+    /// Returns the highest level with a populated entry on either direction.
     ///
     /// Unlike calling [`Self::left_neighbors`] and [`Self::right_neighbors`] separately and
-    /// combining the results, the left and right sides are read atomically with respect to
-    /// concurrent writes. No concurrent write can land between reading the two sides and leave
+    /// combining the results, the left and right directions are read atomically with respect to
+    /// concurrent writes. No concurrent write can land between reading the two directions and leave
     /// the combined result reflecting no single consistent state of the table.
     ///
     /// # Returns
     ///
-    /// `None` if no level has a populated entry on either side (an empty table). `Some(level)`
+    /// `None` if no level has a populated entry on either direction (an empty table). `Some(level)`
     /// for the highest level with a populated entry, otherwise.
     fn max_populated_level(&self) -> Option<LookupTableLevel>;
 
