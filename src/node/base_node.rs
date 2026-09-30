@@ -2953,14 +2953,10 @@ mod tests {
         );
     }
 
-    /// With `introducer.id() > u.id()` (the search-left branch, `u` becoming the new
-    /// leftmost node reachable from `introducer`), the stage-1 search runs
-    /// `Direction::Left` and resolves `z` directly rather than `s`. When `z`'s own
-    /// left-neighbor query resolves `None`, `join_stage1_link_level0` never sends a
-    /// second `GetLinkOp` and resolves once the single `z`-side request is applied,
-    /// leaving this node's left-side table entry unset. This is the mirror of
-    /// `test_join_stage1_link_level0_no_right_neighbor_sends_single_link_request`,
-    /// covering the `introducer.id() > u.id()` case the tests above do not.
+    /// The introducer's id is above this node's id, so the search runs left and returns `z`,
+    /// the closest node above this node's id. `z` has no left neighbor, so this node becomes
+    /// the new leftmost node. The join must send only one link request, to `z`, and finish
+    /// once `z` replies. This node's right entry then holds `z`, and its left entry stays empty.
     #[tokio::test]
     async fn test_join_stage1_link_level0_new_leftmost_node_sends_single_link_request() {
         let node_id = random_identifier();
