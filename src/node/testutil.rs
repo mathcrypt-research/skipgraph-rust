@@ -48,8 +48,9 @@ pub(crate) fn sorted_nodes_fixture(
 }
 
 /// Polls `probe` until it returns a value, yielding to the runtime between checks, and returns
-/// that value. Unlike `wait_until`, the check runs on the caller's own task, so `probe` can borrow
-/// local state. The caller bounds the wait with a timeout.
+/// that value. Unlike [`wait_until`](crate::core::testutil::fixtures::wait_until), the check runs
+/// on the caller's own task, so `probe` can borrow local state. The caller bounds the wait with a
+/// timeout.
 pub(crate) async fn poll_until_some<T>(mut probe: impl FnMut() -> Option<T>) -> T {
     loop {
         if let Some(value) = probe() {
