@@ -1,7 +1,7 @@
 use crate::core::model::search::Nonce;
 use crate::core::{
-    IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel, MaxLevelReq,
-    MaxLevelRes, MembershipVector,
+    Direction, IdSearchReq, IdSearchRes, Identifier, IrrevocableContext, LookupTableLevel,
+    MaxLevelReq, MaxLevelRes, MembershipVector,
 };
 use crate::network::Event::{GetMaxLevelOp, RetMaxLevelOp, SearchByIdRequest, SearchByIdResponse};
 #[cfg(test)] // TODO: Remove once BaseNode is used in production code.
@@ -13,7 +13,6 @@ use anyhow::anyhow;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Formatter;
-use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -82,10 +81,12 @@ impl BaseNode {
         self.core.mem_vec()
     }
 
-    pub(crate) fn search_by_id(&self, req: IdSearchReq) -> anyhow::Result<IdSearchRes> {
-        let span = tracing::trace_span!(parent: &self.span, "search_by_id", target = ?req.target, level = ?req.level);
-        let _enter = span.enter();
-
+    #[tracing::instrument(level = "trace", parent = &self.span, fields(target = ?req.target, level = ?req.level), skip(self, req, timeout))]
+    pub(crate) async fn search_by_id(
+        &self,
+        req: IdSearchReq,
+        timeout: Duration,
+    ) -> anyhow::Result<IdSearchRes> {
         tracing::trace!("searching for target {:?}", req.target);
         let local_res = self
             .core
@@ -96,49 +97,15 @@ impl BaseNode {
             return Ok(local_res);
         }
 
-        let (tx, rx) = sync_channel::<IdSearchRes>(1);
-        {
-            let mut request_id_map = self
-                .request_id_map
-                .lock()
-                .expect("mutex was poisoned by a previous panic");
-            request_id_map.insert(req.nonce, Waiter::Search(tx));
-        }
-        let relay_request = SearchByIdRequest(IdSearchReq {
-            nonce: req.nonce,
-            target: req.target,
-            origin: self.core.id(),
-            level: local_res.termination_level,
-            direction: req.direction,
-        });
-
-        if let Err(e) = self.net.send_event(local_res.result, relay_request) {
-            self.request_id_map
-                .lock()
-                .expect("mutex was poisoned by a previous panic")
-                .remove(&req.nonce);
-            return Err(anyhow!("failed to perform search by id {}", e));
-        }
-        tracing::info!("relayed search by id request to the next node, pending response");
-        match rx.recv() {
-            Ok(net_result) => {
-                tracing::info!(
-                    "received network response for search by id {:?}: {:?}",
-                    req.target,
-                    net_result.result
-                );
-                Ok(net_result)
-            }
-            Err(_) => {
-                self.request_id_map
-                    .lock()
-                    .expect("mutex was poisoned by a previous panic")
-                    .remove(&req.nonce);
-                Err(anyhow!(
-                    "failed to receive network response for search by id"
-                ))
-            }
-        }
+        self.send_search_by_id_req(
+            local_res.result,
+            req.nonce,
+            req.target,
+            local_res.termination_level,
+            req.direction,
+            timeout,
+        )
+        .await
     }
 
     /// Asks `introducer` for the highest lookup-table level at which it has any
@@ -205,6 +172,54 @@ impl BaseNode {
             )),
             Err(_) => Err(anyhow!("timed out waiting for get max level response")),
         }
+    }
+
+    /// Sends the request to `dest` and waits for the terminal node's reply, skipping this
+    /// node's own local search. `dest` must not be past `target` in `direction`, so
+    /// `dest <= target` for `Right` and `dest >= target` for `Left`. A node with no better
+    /// neighbor answers with its own identifier, which is valid only under that condition.
+    /// Each relay hop preserves it, so the caller guarantees it for the first hop only.
+    ///
+    /// # Returns
+    ///
+    /// The terminal node's response.
+    ///
+    /// # Errors
+    ///
+    /// * **RECOVERABLE, INTERNAL.** Send failure, dropped reply channel, or `timeout`.
+    #[tracing::instrument(level = "trace", parent = &self.span, skip(self))]
+    async fn send_search_by_id_req(
+        &self,
+        dest: Identifier,
+        nonce: Nonce,
+        target: Identifier,
+        level: LookupTableLevel,
+        direction: Direction,
+        timeout: Duration,
+    ) -> anyhow::Result<IdSearchRes> {
+        let (tx, rx) = oneshot::channel::<IdSearchRes>();
+        self.request_id_map
+            .lock()
+            .expect("mutex was poisoned by a previous panic")
+            .insert(nonce, Waiter::AsyncSearch(tx));
+        let _guard = WaiterGuard::new(nonce, self.request_id_map.clone());
+
+        let req = IdSearchReq {
+            nonce,
+            target,
+            origin: self.core.id(),
+            level,
+            direction,
+        };
+        self.net
+            .send_event(dest, SearchByIdRequest(req))
+            .map_err(|e| anyhow!("failed to send search by id request: {}", e))?;
+        tracing::info!("sent search by id request, pending response");
+
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| anyhow!("timed out waiting for search by id response"))?
+            .map_err(|_| anyhow!("failed to receive search by id response: sender dropped"))
     }
 }
 
@@ -279,14 +294,14 @@ impl EventProcessorCore for BaseNode {
                     .request_id_map
                     .lock()
                     .expect("mutex was poisoned by a previous panic");
-                let waiter = if matches!(request_id_map.get(&res.nonce), Some(Waiter::Search(_))) {
+                let waiter = if let Some(Waiter::AsyncSearch(_)) = request_id_map.get(&res.nonce) {
                     request_id_map.remove(&res.nonce)
                 } else {
                     None
                 };
                 drop(request_id_map);
 
-                if let Some(Waiter::Search(tx)) = waiter {
+                if let Some(Waiter::AsyncSearch(tx)) = waiter {
                     if let Err(e) = tx.send(res) {
                         tracing::warn!("failed to send the response to the receiver end: {:?}", e)
                     }
@@ -318,7 +333,7 @@ impl EventProcessorCore for BaseNode {
                     }
                 } else {
                     // no waiter at this nonce, or the entry belongs to an unrelated
-                    // `Waiter::Search` request: left untouched in the map, not this
+                    // `Waiter::AsyncSearch` request: left untouched in the map, not this
                     // arm's concern. log and move on.
                     tracing::debug!("no matching max level waiter for nonce {:?}", res.nonce);
                 }
@@ -376,6 +391,7 @@ mod tests {
     use crate::core::{ArrayLookupTable, LookupTable};
     use crate::network::NetworkMock;
     use crate::node::core::BaseCore;
+    use crate::node::testutil::make_core;
     use unimock::*;
 
     /// builds a `BaseNode` over `mock_net`, factoring out repeated core/node construction.
@@ -476,11 +492,72 @@ mod tests {
         assert_eq!(level_result.expect("should resolve"), expected_level);
     }
 
+    /// A single in-flight `send_search_by_id_req` call resolves to the result of its
+    /// correlated `SearchByIdResponse` and sends the caller-supplied `direction` and `level`.
+    #[tokio::test]
+    async fn test_send_search_by_id_req_resolves() {
+        let id = random_identifier();
+        let introducer = random_identifier();
+        let expected_anchor = random_identifier();
+        let search_level: LookupTableLevel = 3;
+        let nonce = Nonce::random();
+
+        let mock_net = Unimock::new((
+            NetworkMock::register_processor
+                .each_call(matching!(_))
+                .answers(&|_, _| Ok(())),
+            NetworkMock::clone_box
+                .each_call(matching!())
+                .answers(&|mock| Box::new(mock.clone())),
+            NetworkMock::send_event
+                .each_call(matching!(_))
+                .answers_arc(Arc::new(move |_, dest: Identifier, event: Event| {
+                    assert_eq!(dest, introducer, "expected request sent to the introducer");
+                    let SearchByIdRequest(req) = event else {
+                        panic!("unexpected event: {:?}", event)
+                    };
+                    assert_eq!(req.direction, Direction::Right);
+                    assert_eq!(req.level, search_level);
+                    Ok(())
+                }))
+                .once(),
+        ));
+
+        let core = Box::new(make_core(id, Box::new(ArrayLookupTable::new())));
+        let node =
+            BaseNode::new(span_fixture(), core, Box::new(mock_net)).expect("failed to create node");
+
+        let (res, ()) = tokio::join!(
+            node.send_search_by_id_req(
+                introducer,
+                nonce,
+                id,
+                search_level,
+                Direction::Right,
+                Duration::from_millis(200)
+            ),
+            async {
+                node.process_incoming_event(
+                    introducer,
+                    SearchByIdResponse(IdSearchRes {
+                        nonce,
+                        target: id,
+                        termination_level: search_level,
+                        result: expected_anchor,
+                    }),
+                )
+                .expect("failed to process reply");
+            }
+        );
+
+        assert_eq!(res.expect("should resolve").result, expected_anchor);
+    }
+
     /// Forces a blocking `search_by_id` waiter and an async `get_max_level` waiter to be
     /// live in the shared `request_id_map` simultaneously, then answers both. Guards three
     /// regressions.
     ///
-    /// 1. The map's `Mutex` held across the blocking `recv` or across the `.await`, which
+    /// 1. The map's `Mutex` held across the `.await`, which
     ///    deadlocks the moment two waiters coexist.
     /// 2. Reply routing that resolves whichever waiter it finds instead of matching on the
     ///    nonce.
@@ -546,10 +623,13 @@ mod tests {
             level: 0,
             direction: Direction::Left,
         };
-        let search_handle =
-            tokio::task::spawn_blocking(move || node_search.search_by_id(search_req));
-        // deliberately generous: this budget is spent waiting for the blocking search
-        // thread to be scheduled, so a tight bound here fails under load. timeout
+        let search_handle = tokio::spawn(async move {
+            node_search
+                .search_by_id(search_req, Duration::from_secs(30))
+                .await
+        });
+        // deliberately generous: this budget is spent waiting for the spawned search task
+        // to be scheduled, so a tight bound here fails under load. timeout
         // behaviour is covered by `test_get_max_level_times_out_and_cleans_up`, and the
         // outer bound below is what fails this test if anything hangs.
         let max_level_fut = node.get_max_level(introducer, Duration::from_secs(30));
