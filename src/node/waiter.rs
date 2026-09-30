@@ -1,5 +1,5 @@
 use crate::core::model::search::Nonce;
-use crate::core::{IdSearchRes, MaxLevelRes};
+use crate::core::{IdSearchRes, MaxLevelRes, NeighborRes};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -8,11 +8,14 @@ use tokio::sync::oneshot;
 /// [`Nonce`] in `BaseNode::request_id_map`. One map, one variant per message type, not
 /// a map per type, because the lock should protect one logical entity, "requests this
 /// node has outstanding".
+#[derive(Debug)]
 pub(super) enum Waiter {
     /// a pending `get_max_level` call, resolved by a `RetMaxLevelOp`.
     MaxLevel(oneshot::Sender<MaxLevelRes>),
     /// a pending `search_by_id` call, resolved by a `SearchByIdResponse`.
     AsyncSearch(oneshot::Sender<IdSearchRes>),
+    /// a pending `get_neighbor` call, resolved by a `RetNeighborOp`.
+    Neighbor(oneshot::Sender<NeighborRes>),
 }
 
 /// RAII guard that unconditionally removes a nonce's waiter-map entry on drop — ties
