@@ -3,7 +3,8 @@ use crate::core::model::direction::Direction;
 use crate::core::model::identity::Identity;
 use crate::core::model::search::Nonce;
 use crate::core::testutil::fixtures::{
-    join_all_with_timeout, join_with_timeout, random_sorted_identifiers, span_fixture,
+    join_all_with_timeout, join_with_timeout, random_address, random_sorted_identifiers,
+    span_fixture,
 };
 use crate::core::{
     Address, ArrayLookupTable, IdSearchReq, Identifier, LookupTable, MembershipVector,
@@ -40,7 +41,7 @@ impl LocalSkipGraph {
 
         for &id in &identifiers {
             let lt: Box<dyn LookupTable> = Box::new(ArrayLookupTable::new());
-            let network = NetworkHub::new_mock_network(hub.clone(), id)?;
+            let network = NetworkHub::new_mock_network(hub.clone(), id, random_address())?;
             let core = Box::new(make_core(id, lt.clone()));
             let node = BaseNode::new(span_fixture(), core, network.clone_box())?;
             nodes.push(node);

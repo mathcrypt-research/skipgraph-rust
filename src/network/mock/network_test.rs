@@ -1,4 +1,4 @@
-use crate::core::testutil::fixtures::random_identifier;
+use crate::core::testutil::fixtures::{random_address, random_identifier};
 use crate::core::Identifier;
 use crate::network::mock::hub::NetworkHub;
 use crate::network::Event::TestMessage;
@@ -57,7 +57,8 @@ impl EventProcessorCore for MockEventProcessor {
 fn test_mock_event_processor() {
     let hub = NetworkHub::new();
     let target_id = random_identifier();
-    let mock_network = NetworkHub::new_mock_network(hub.clone(), target_id).unwrap();
+    let mock_network =
+        NetworkHub::new_mock_network(hub.clone(), target_id, random_address()).unwrap();
     let core_processor = MockEventProcessor::new();
     let processor = MessageProcessor::new(Box::new(core_processor.clone()));
     let event = TestMessage("Hello, World!".to_string());
@@ -77,7 +78,7 @@ fn test_hub_route_event() {
     let hub = NetworkHub::new();
 
     let id_1 = random_identifier();
-    let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1).unwrap();
+    let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1, random_address()).unwrap();
     let core_proc_1 = MockEventProcessor::new();
     let msg_proc_1 = MessageProcessor::new(Box::new(core_proc_1.clone()));
     mock_net_1
@@ -85,7 +86,7 @@ fn test_hub_route_event() {
         .expect("failed to register event processor");
 
     let id_2 = random_identifier();
-    let mock_net_2 = NetworkHub::new_mock_network(hub, id_2).unwrap();
+    let mock_net_2 = NetworkHub::new_mock_network(hub, id_2, random_address()).unwrap();
 
     let event = TestMessage("Test message".to_string());
 
@@ -105,7 +106,8 @@ fn test_network_hub_shallow_clone() {
     let target_id = random_identifier();
 
     // Create a mock network through the original hub
-    let mock_network = NetworkHub::new_mock_network(hub.clone(), target_id).unwrap();
+    let mock_network =
+        NetworkHub::new_mock_network(hub.clone(), target_id, random_address()).unwrap();
 
     // Create an event to route through the cloned hub
     let event = TestMessage("Shallow clone test".to_string());
@@ -134,7 +136,7 @@ fn test_concurrent_event_sending() {
     let hub = NetworkHub::new();
 
     let id_1 = random_identifier();
-    let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1).unwrap();
+    let mock_net_1 = NetworkHub::new_mock_network(hub.clone(), id_1, random_address()).unwrap();
     let core_proc_1 = MockEventProcessor::new();
     let msg_proc_1 = MessageProcessor::new(Box::new(core_proc_1.clone()));
     mock_net_1
@@ -142,7 +144,7 @@ fn test_concurrent_event_sending() {
         .expect("failed to register event processor");
 
     let id_2 = random_identifier();
-    let mock_net_2 = NetworkHub::new_mock_network(hub, id_2).unwrap();
+    let mock_net_2 = NetworkHub::new_mock_network(hub, id_2, random_address()).unwrap();
 
     // Create 10 different event contents
     let event_contents: Vec<String> = (0..10).map(|i| format!("Concurrent message {i}")).collect();
@@ -191,7 +193,8 @@ fn test_concurrent_event_sending() {
 fn test_mock_network_processor_sharing_between_clones() {
     let hub = NetworkHub::new();
     let identifier = random_identifier();
-    let mock_network = NetworkHub::new_mock_network(hub.clone(), identifier).unwrap();
+    let mock_network =
+        NetworkHub::new_mock_network(hub.clone(), identifier, random_address()).unwrap();
 
     // Clone the network before registering a processor
     let mock_network_clone = mock_network.clone();
@@ -221,7 +224,8 @@ fn test_mock_network_processor_sharing_between_clones() {
 fn test_mock_network_processor_sharing_clone_to_original() {
     let hub = NetworkHub::new();
     let identifier = random_identifier();
-    let mock_network = NetworkHub::new_mock_network(hub.clone(), identifier).unwrap();
+    let mock_network =
+        NetworkHub::new_mock_network(hub.clone(), identifier, random_address()).unwrap();
 
     // Clone the network
     let mock_network_clone = mock_network.clone();
@@ -275,4 +279,15 @@ fn test_event_processor_clone_functionality() {
     // Both events should be visible from the shared state
     assert!(core_processor.has_seen("Processor clone test 1"));
     assert!(core_processor.has_seen("Processor clone test 2"));
+}
+
+/// Verifies `MockNetwork::address` returns the address supplied to `new_mock_network`.
+#[test]
+fn test_mock_network_address() {
+    let hub = NetworkHub::new();
+    let identifier = random_identifier();
+    let address = random_address();
+    let mock_network = NetworkHub::new_mock_network(hub, identifier, address).unwrap();
+
+    assert_eq!(mock_network.address(), address);
 }
