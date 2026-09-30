@@ -177,14 +177,14 @@ where
 }
 
 /// Initializes the global tracing subscriber at DEBUG level (idempotent via `try_init`) and returns
-/// a TRACE-level span.
+/// a DEBUG-level span.
 pub fn span_fixture() -> tracing::Span {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_target(false)
         .try_init();
 
-    tracing::span!(tracing::Level::TRACE, "test_span")
+    tracing::span!(tracing::Level::DEBUG, "test_span")
 }
 
 mod test {
