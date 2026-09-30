@@ -2856,8 +2856,7 @@ mod tests {
                         }
                         GetLinkOp(req) => {
                             assert_eq!(
-                                dest,
-                                s_id,
+                                dest, s_id,
                                 "no z was ever known, so no second link request should be sent"
                             );
                             *link_count_mock.lock().expect("mutex poisoned") += 1;
